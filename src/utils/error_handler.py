@@ -1,6 +1,3 @@
-"""
-Менеджер обработки ошибок с красивыми user-friendly сообщениями
-"""
 import logging
 from enum import Enum
 from typing import Tuple
@@ -9,7 +6,6 @@ logger = logging.getLogger(__name__)
 
 
 class ErrorCategory(Enum):
-    """Категории ошибок"""
     NETWORK = "network"
     FORMAT = "format"
     SECURITY = "security"
@@ -20,24 +16,19 @@ class ErrorCategory(Enum):
 
 
 class ErrorMessage:
-    """Содержит информацию об ошибке"""
-
     def __init__(self, user_message: str, log_message: str = None, category: ErrorCategory = ErrorCategory.UNKNOWN):
-        self.user_message = user_message  # Сообщение для пользователя
-        self.log_message = log_message or user_message  # Сообщение для логов
+        self.user_message = user_message
+        self.log_message = log_message or user_message
         self.category = category
 
 
 class ErrorHandler:
-    """Обрабатывает ошибки и преобразует их в user-friendly сообщения"""
-
     def __init__(self):
         self.error_patterns = self._init_error_patterns()
 
     def _init_error_patterns(self) -> dict:
-        """Инициализирует паттерны для определения типов ошибок"""
         return {
-            # Сетевые ошибки
+
             "timeout": (
                 "❌ Сетевая ошибка: истекло время ожидания\n\n"
                 "Попробуйте:\n"
@@ -67,7 +58,7 @@ class ErrorHandler:
                 ErrorCategory.NETWORK
             ),
 
-            # Ошибки формата и доступности
+
             "unavailable": (
                 "❌ Видео недоступно или удалено\n\n"
                 "Возможные причины:\n"
@@ -98,7 +89,7 @@ class ErrorHandler:
                 ErrorCategory.SECURITY
             ),
 
-            # Ошибки квоты
+
             "throttled": (
                 "⚠️ Превышен лимит запросов\n\n"
                 "Видеосервис ограничил скорость запросов.\n"
@@ -111,7 +102,7 @@ class ErrorHandler:
                 ErrorCategory.QUOTA
             ),
 
-            # Ошибки файлов
+
             "file not found": (
                 "❌ Файл не найден\n\n"
                 "Видеофайл не был найден на сервере.",
@@ -131,27 +122,17 @@ class ErrorHandler:
         }
 
     def handle_error(self, error: Exception, error_type: str = None) -> ErrorMessage:
-        """
-        Обрабатывает ошибку и возвращает user-friendly сообщение
-
-        Args:
-            error: Исключение для обработки
-            error_type: Опциональный тип ошибки для точного определения
-
-        Returns:
-            ErrorMessage с пользовательским и логируемым сообщениями
-        """
         error_str = str(error).lower()
         log_message = f"Ошибка: {type(error).__name__}: {str(error)}"
 
         logger.warning(log_message)
 
-        # Проверяем по паттернам
+
         for pattern, (user_msg, category) in self.error_patterns.items():
             if pattern in error_str:
                 return ErrorMessage(user_msg, log_message, category)
 
-        # Специальная обработка для конкретных ошибок
+
         if "403" in error_str:
             return ErrorMessage(
                 "❌ Доступ запрещен\n\n"
@@ -176,7 +157,7 @@ class ErrorHandler:
                 ErrorCategory.QUOTA
             )
 
-        # Проверяем на опасные слова для скрытия технических деталей
+
         if any(word in error_str for word in ["certificate", "ssl", "https", "verify"]):
             return ErrorMessage(
                 "❌ Ошибка безопасности соединения\n\n"
@@ -185,7 +166,7 @@ class ErrorHandler:
                 ErrorCategory.NETWORK
             )
 
-        #默认ное сообщение об ошибке
+
         return ErrorMessage(
             "❌ Неизвестная ошибка\n\n"
             "Что-то пошло не так. Попробуйте:\n"
@@ -197,7 +178,6 @@ class ErrorHandler:
         )
 
     def get_generic_error_message(self, category: ErrorCategory = None) -> str:
-        """Получает общее сообщение об ошибке для категории"""
         if category == ErrorCategory.NETWORK:
             return (
                 "❌ Ошибка соединения\n\n"
@@ -220,12 +200,11 @@ class ErrorHandler:
             )
 
 
-# Глобальный обработчик ошибок
+
 _error_handler = None
 
 
 def get_error_handler() -> ErrorHandler:
-    """Получает глобальный обработчик ошибок"""
     global _error_handler
     if _error_handler is None:
         _error_handler = ErrorHandler()

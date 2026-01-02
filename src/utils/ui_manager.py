@@ -1,21 +1,12 @@
-"""
-Менеджер пользовательского интерфейса с красивым оформлением
-Включает темы, эмодзи, форматирование сообщений
-"""
 from telebot import types
 from enum import Enum
 
-
 class UITheme(Enum):
-    """Темы оформления интерфейса"""
     MODERN = "modern"
     CLASSIC = "classic"
     MINIMAL = "minimal"
 
-
 class UIManager:
-    """Управляет красивым оформлением интерфейса бота"""
-
     def __init__(self, theme=UITheme.MODERN):
         self.theme = theme
         self.emojis = {
@@ -76,7 +67,6 @@ class UIManager:
         }
 
     def format_message(self, title: str, content: str, style="info") -> str:
-        """Форматирует сообщение с красивым оформлением"""
         if style == "error":
             emoji = self.emojis["error"]
             separator = "─" * 40
@@ -94,7 +84,6 @@ class UIManager:
 
     def create_progress_bar(self, progress: float, length: int = 10, filled_char: str = "▰",
                           empty_char: str = "▱") -> str:
-        """Создает красивый прогресс-бар"""
         filled = int(progress * length)
         percentage = int(progress * 100)
         bar = f"{filled_char * filled}{empty_char * (length - filled)}"
@@ -102,7 +91,6 @@ class UIManager:
 
     def create_status_message(self, title: str, status: str, progress: float = None,
                             details: dict = None) -> str:
-        """Создает форматированное сообщение о статусе"""
         message = f"{self.emojis['video']} *{title}*\n\n"
 
         # Статус
@@ -124,7 +112,6 @@ class UIManager:
         return message
 
     def create_quality_selector(self, message_id: int) -> types.InlineKeyboardMarkup:
-        """Создает красивую клавиатуру выбора качества"""
         markup = types.InlineKeyboardMarkup(row_width=1)
 
         buttons = [
@@ -146,7 +133,6 @@ class UIManager:
 
     def create_download_options(self, message_id: int, has_gif: bool = False,
                                has_subtitles: bool = False, has_thumbnail: bool = False) -> types.InlineKeyboardMarkup:
-        """Создает расширенную клавиатуру опций загрузки"""
         markup = types.InlineKeyboardMarkup(row_width=1)
 
         options = []
@@ -163,7 +149,6 @@ class UIManager:
         return markup
 
     def format_file_size(self, size_bytes: int) -> str:
-        """Форматирует размер файла в читаемый вид"""
         if size_bytes < 1024:
             return f"{size_bytes} B"
         elif size_bytes < 1024 * 1024:
@@ -174,7 +159,6 @@ class UIManager:
             return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
     def format_time(self, seconds: float) -> str:
-        """Форматирует время в человекочитаемый вид"""
         if seconds < 60:
             return f"{seconds:.0f}s"
         elif seconds < 3600:
@@ -185,7 +169,6 @@ class UIManager:
             return f"{hours:.1f}h"
 
     def _get_status_emoji(self, status: str) -> str:
-        """Получает эмодзи для статуса"""
         status_lower = status.lower()
 
         if "pending" in status_lower or "queue" in status_lower:
@@ -206,7 +189,6 @@ class UIManager:
             return self.emojis["info"]
 
     def create_table_row(self, columns: list, widths: list = None) -> str:
-        """Создает красивый ряд таблицы"""
         if widths:
             row = " | ".join(f"{str(col):<{w}}" for col, w in zip(columns, widths))
         else:
@@ -214,7 +196,6 @@ class UIManager:
         return row
 
     def format_duration(self, seconds: int) -> str:
-        """Форматирует длительность видео"""
         minutes, secs = divmod(seconds, 60)
         hours, minutes = divmod(minutes, 60)
 
@@ -229,7 +210,6 @@ _ui_manager = None
 
 
 def get_ui_manager(theme=UITheme.MODERN) -> UIManager:
-    """Получает глобальный экземпляр UI Manager"""
     global _ui_manager
     if _ui_manager is None:
         _ui_manager = UIManager(theme)

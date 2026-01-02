@@ -1,6 +1,3 @@
-"""
-Менеджер повторных попыток с экспоненциальной задержкой и умной обработкой ошибок
-"""
 import logging
 import time
 import random
@@ -11,17 +8,14 @@ logger = logging.getLogger(__name__)
 
 
 class RetryStrategy(Enum):
-    """Стратегии повторных попыток"""
-    EXPONENTIAL = "exponential"  # Экспоненциальная задержка
-    LINEAR = "linear"  # Линейная задержка
-    FIBONACCI = "fibonacci"  # Фибоначчи
-    FIXED = "fixed"  # Фиксированная задержка
-    RANDOM = "random"  # Случайная задержка
+    EXPONENTIAL = "exponential"
+    LINEAR = "linear"
+    FIBONACCI = "fibonacci"
+    FIXED = "fixed"
+    RANDOM = "random"
 
 
 class RetryConfig:
-    """Конфигурация для повторных попыток"""
-
     def __init__(
         self,
         max_retries: int = 3,
@@ -42,11 +36,9 @@ class RetryConfig:
 
 
 class RetryManager:
-    """Управляет повторными попытками с умной обработкой ошибок"""
-
     def __init__(self, config: RetryConfig = None):
         self.config = config or RetryConfig()
-        self.attempt_counts = {}  # Отслеживание попыток по операциям
+        self.attempt_counts = {}
 
     def retry_operation(
         self,
@@ -57,19 +49,6 @@ class RetryManager:
         on_failure: Callable = None,
         **kwargs
     ) -> Any:
-        """
-        Выполняет операцию с повторными попытками
-
-        Args:
-            operation: Функция для выполнения
-            operation_id: Уникальный ID операции для отслеживания
-            on_retry: Callback при повторной попытке
-            on_failure: Callback при финальной ошибке
-            *args, **kwargs: Аргументы для функции operation
-
-        Returns:
-            Результат операции
-        """
         retry_count = 0
         last_exception = None
 
@@ -87,7 +66,7 @@ class RetryManager:
 
                     time.sleep(delay)
 
-                # Выполняем операцию
+
                 result = operation(*args, **kwargs)
                 logger.debug(f"Операция успешна (попытка {retry_count + 1})")
                 return result
@@ -99,21 +78,19 @@ class RetryManager:
                     f"(попытка {retry_count + 1}/{self.config.max_retries + 1}): {type(e).__name__}: {str(e)}"
                 )
 
-                # Проверяем, нужно ли повторять
                 if not self._should_retry(e, retry_count):
                     logger.error(f"Операция не подлежит повтору или достигнут лимит: {str(e)}")
                     break
 
                 retry_count += 1
 
-        # Финальная ошибка
+
         if on_failure:
             on_failure(retry_count, last_exception)
 
         raise last_exception or Exception("Операция не удалась после всех попыток")
 
     def _calculate_delay(self, attempt: int) -> float:
-        """Вычисляет задержку перед следующей попыткой"""
         if self.config.strategy == RetryStrategy.EXPONENTIAL:
             delay = self.config.initial_delay * (self.config.exponential_base ** (attempt - 1))
 
@@ -132,10 +109,10 @@ class RetryManager:
         else:
             delay = self.config.initial_delay
 
-        # Ограничиваем максимальной задержкой
+
         delay = min(delay, self.config.max_delay)
 
-        # Добавляем jitter для избежания thundering herd problem
+
         if self.config.jitter and self.config.strategy != RetryStrategy.RANDOM:
             jitter_factor = random.uniform(0.8, 1.2)
             delay *= jitter_factor
@@ -143,23 +120,21 @@ class RetryManager:
         return delay
 
     def _should_retry(self, exception: Exception, attempt_count: int) -> bool:
-        """Определяет, нужно ли повторять попытку"""
-        # Проверяем лимит попыток
         if attempt_count >= self.config.max_retries:
             return False
 
-        # Проверяем тип исключения
+
         if not isinstance(exception, self.config.retryable_exceptions):
             return False
 
-        # Специальная логика для определенных ошибок
+
         error_str = str(exception).lower()
 
-        # Не повторяем для постоянных ошибок
+
         permanent_errors = [
-            "404",  # Not found
-            "403",  # Forbidden
-            "401",  # Unauthorized
+            "404",
+            "403",
+            "401",
             "private",
             "age-restricted",
             "unavailable",
@@ -172,7 +147,7 @@ class RetryManager:
                 logger.debug(f"Постоянная ошибка, повтор не требуется: {error_key}")
                 return False
 
-        # Повторяем для временных ошибок
+
         retry_keywords = [
             "timeout",
             "temporarily unavailable",
@@ -192,12 +167,11 @@ class RetryManager:
                 logger.debug(f"Повторяемая ошибка обнаружена: {keyword}")
                 return True
 
-        # По умолчанию пытаемся повторить
+
         return True
 
     @staticmethod
     def _fibonacci(n: int) -> int:
-        """Генерирует n-е число Фибоначчи"""
         if n <= 1:
             return 1
         a, b = 1, 1
@@ -206,21 +180,17 @@ class RetryManager:
         return b
 
     def get_retry_info(self, operation_id: str) -> dict:
-        """Получает информацию о повторных попытках для операции"""
         return self.attempt_counts.get(operation_id, {"attempts": 0})
 
     def reset_retry_count(self, operation_id: str):
-        """Сбрасывает счетчик повторных попыток"""
         if operation_id in self.attempt_counts:
             del self.attempt_counts[operation_id]
 
 
 class SmartRetryManager(RetryManager):
-    """Расширенный менеджер с адаптивной стратегией"""
-
     def __init__(self, config: RetryConfig = None):
         super().__init__(config)
-        self.error_history = {}  # История ошибок для анализа
+        self.error_history = {}
 
     def retry_operation_smart(
         self,
@@ -231,9 +201,6 @@ class SmartRetryManager(RetryManager):
         on_failure: Callable = None,
         **kwargs
     ) -> Any:
-        """
-        Выполняет операцию с умной адаптивной стратегией повторных попыток
-        """
         retry_count = 0
         last_exception = None
         consecutive_same_errors = 0
@@ -242,7 +209,7 @@ class SmartRetryManager(RetryManager):
         while retry_count <= self.config.max_retries:
             try:
                 if retry_count > 0:
-                    # Адаптивная задержка на основе истории ошибок
+
                     delay = self._calculate_adaptive_delay(
                         retry_count, last_error_type, consecutive_same_errors
                     )
@@ -256,11 +223,11 @@ class SmartRetryManager(RetryManager):
 
                     time.sleep(delay)
 
-                # Выполняем операцию
+
                 result = operation(*args, **kwargs)
                 logger.debug(f"Операция успешна (попытка {retry_count + 1})")
 
-                # Очищаем историю ошибок при успехе
+
                 if operation_id:
                     self.error_history[operation_id] = []
 
@@ -270,7 +237,7 @@ class SmartRetryManager(RetryManager):
                 last_exception = e
                 error_type = type(e).__name__
 
-                # Отслеживаем историю ошибок
+
                 if operation_id:
                     if operation_id not in self.error_history:
                         self.error_history[operation_id] = []
@@ -280,7 +247,7 @@ class SmartRetryManager(RetryManager):
                         "message": str(e)
                     })
 
-                # Отслеживаем повторяющиеся ошибки
+
                 if error_type == last_error_type:
                     consecutive_same_errors += 1
                 else:
@@ -292,12 +259,12 @@ class SmartRetryManager(RetryManager):
                     f"{error_type}: {str(e)}"
                 )
 
-                # Проверяем, нужно ли повторять
+
                 if not self._should_retry(e, retry_count):
                     logger.error(f"Не повторяем операцию: {str(e)}")
                     break
 
-                # Если одна и та же ошибка повторяется 2+ раза, может быть смысла остановиться
+
                 if consecutive_same_errors >= 2:
                     logger.warning(
                         f"Одна и та же ошибка '{error_type}' повторилась {consecutive_same_errors} раз"
@@ -305,7 +272,7 @@ class SmartRetryManager(RetryManager):
 
                 retry_count += 1
 
-        # Финальная ошибка
+
         if on_failure:
             on_failure(retry_count, last_exception)
 
@@ -317,24 +284,23 @@ class SmartRetryManager(RetryManager):
         error_type: Optional[str] = None,
         consecutive_errors: int = 0
     ) -> float:
-        """Вычисляет адаптивную задержку на основе типа ошибки"""
-        # Базовая задержка
+
         base_delay = self._calculate_delay(attempt)
 
-        # Если одна и та же ошибка повторяется, увеличиваем задержку
+
         if consecutive_errors > 1:
             base_delay *= (1.5 * consecutive_errors)
 
-        # Специальная обработка для rate limit ошибок
+
         if error_type and "rate" in error_type.lower():
-            # Для rate limit ошибок делаем большую задержку
+
             base_delay = max(base_delay, 10.0 * attempt)
 
-        # Ограничиваем максимальной задержкой
+
         return min(base_delay, self.config.max_delay)
 
 
-# Конфигурации для разных типов операций
+
 DOWNLOAD_RETRY_CONFIG = RetryConfig(
     max_retries=4,
     initial_delay=2.0,
@@ -368,13 +334,12 @@ SUBTITLE_RETRY_CONFIG = RetryConfig(
     jitter=True,
 )
 
-# Глобальные экземпляры
+
 _retry_manager = None
 _smart_retry_manager = None
 
 
 def get_retry_manager(config: RetryConfig = None) -> RetryManager:
-    """Получает глобальный менеджер повторных попыток"""
     global _retry_manager
     if _retry_manager is None:
         _retry_manager = RetryManager(config or DOWNLOAD_RETRY_CONFIG)
@@ -382,7 +347,6 @@ def get_retry_manager(config: RetryConfig = None) -> RetryManager:
 
 
 def get_smart_retry_manager(config: RetryConfig = None) -> SmartRetryManager:
-    """Получает глобальный смарт менеджер повторных попыток"""
     global _smart_retry_manager
     if _smart_retry_manager is None:
         _smart_retry_manager = SmartRetryManager(config or DOWNLOAD_RETRY_CONFIG)

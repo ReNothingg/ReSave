@@ -1,17 +1,10 @@
-"""
-Валидатор и корректор ссылок
-Автоматическое исправление неправильных ссылок
-"""
 import re
 import logging
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-
 class URLValidator:
-    """Валидирует и исправляет ссылки на видео"""
-
     # Поддерживаемые платформы
     SUPPORTED_PLATFORMS = {
         "youtube": [r"youtube\.com", r"youtu\.be"],
@@ -35,24 +28,14 @@ class URLValidator:
         )
 
     def validate(self, url: str) -> Tuple[bool, str, dict]:
-        """
-        Валидирует ссылку и пытается исправить её
-
-        Returns:
-            Tuple[is_valid, corrected_url, metadata]
-        """
         if not url or not isinstance(url, str):
             return False, None, {"error": "Пустая ссылка"}
 
-        # Очищаем от пробелов
         url = url.strip()
 
-        # Проверяем на наличие http(s)://
         if not self.url_pattern.match(url):
-            # Пытаемся добавить https://
             corrected = f"https://{url}"
 
-            # Проверяем, похожа ли исправленная ссылка на валидную
             if self._looks_like_url(corrected):
                 logger.info(f"Ссылка исправлена: добавлен https:// к {url}")
                 return True, corrected, {
@@ -61,11 +44,9 @@ class URLValidator:
                     "original": url
                 }
 
-        # Проверяем валидность
         if not self._looks_like_url(url):
             return False, None, {"error": "Это не похоже на ссылку"}
 
-        # Определяем платформу
         platform = self._detect_platform(url)
 
         return True, url, {
@@ -74,10 +55,8 @@ class URLValidator:
         }
 
     def fix_common_mistakes(self, url: str) -> str:
-        """Исправляет распространенные ошибки в ссылках"""
         url = url.strip()
 
-        # Исправления специфичные для платформ
         fixes = [
             # YouTube
             (r"youtube\.com/watch\?v=([^&]+)&.*", r"https://youtube.com/watch?v=\1"),
@@ -101,12 +80,10 @@ class URLValidator:
         return url
 
     def is_valid_url(self, url: str) -> bool:
-        """Быстрая проверка валидности ссылки"""
         is_valid, _, _ = self.validate(url)
         return is_valid
 
     def _looks_like_url(self, url: str) -> bool:
-        """Проверяет, похожа ли строка на ссылку"""
         # Должна быть точка и косые черты
         if "." not in url or "//" not in url:
             return False
@@ -122,7 +99,6 @@ class URLValidator:
         return True
 
     def _detect_platform(self, url: str) -> str:
-        """Определяет платформу видео по ссылке"""
         url_lower = url.lower()
 
         for platform, patterns in self.SUPPORTED_PLATFORMS.items():
@@ -133,7 +109,6 @@ class URLValidator:
         return "unknown"
 
     def suggest_fixes(self, invalid_url: str) -> list:
-        """Предлагает варианты исправления неправильной ссылки"""
         suggestions = []
 
         # Попытка 1: добавить https://
@@ -157,7 +132,6 @@ class URLValidator:
         return suggestions
 
     def extract_video_id(self, url: str, platform: str = None) -> str:
-        """Извлекает ID видео из ссылки"""
         if not platform:
             platform = self._detect_platform(url)
 
@@ -194,12 +168,10 @@ class URLValidator:
         return None
 
 
-# Глобальный валидатор
 _url_validator = None
 
 
 def get_url_validator() -> URLValidator:
-    """Получает глобальный валидатор ссылок"""
     global _url_validator
     if _url_validator is None:
         _url_validator = URLValidator()

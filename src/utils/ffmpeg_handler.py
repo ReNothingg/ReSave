@@ -1,6 +1,3 @@
-"""
-FFmpeg установка и управление
-"""
 import os
 import sys
 import shutil
@@ -17,12 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 def which(cmd):
-    """Проверяет наличие команды в PATH"""
     return shutil.which(cmd)
 
 
 def run_cmd(cmd, check=False):
-    """Выполняет системную команду"""
     try:
         return subprocess.check_call(cmd, shell=isinstance(cmd, str))
     except Exception as e:
@@ -33,7 +28,6 @@ def run_cmd(cmd, check=False):
 
 
 def detect_env():
-    """Определяет операционную систему и окружение"""
     syspl = sys.platform
     if syspl.startswith("win"):
         return "windows"
@@ -45,7 +39,6 @@ def detect_env():
 
 
 def try_package_install(ff="ffmpeg"):
-    """Пытается установить FFmpeg используя системный пакетный менеджер"""
     env = detect_env()
     runs = []
 
@@ -84,7 +77,6 @@ def try_package_install(ff="ffmpeg"):
 
 
 def download_binary(url, extract=False):
-    """Загружает бинарный файл с URL"""
     try:
         with urllib.request.urlopen(url) as r:
             data = r.read()
@@ -95,7 +87,6 @@ def download_binary(url, extract=False):
 
 
 def install_ffmpeg_manual():
-    """Вручную скачивает и устанавливает FFmpeg"""
     env = detect_env()
 
     if env == "windows":
@@ -156,7 +147,6 @@ def install_ffmpeg_manual():
 
 
 def ensure_ffmpeg(auto_download=True):
-    """Проверяет наличие FFmpeg и пытается его установить если нужно"""
     if which("ffmpeg"):
         return True
 

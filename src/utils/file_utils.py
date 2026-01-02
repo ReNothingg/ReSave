@@ -1,6 +1,3 @@
-"""
-Утилиты для работы с файлами
-"""
 import os
 import logging
 from pathlib import Path
@@ -9,13 +6,11 @@ logger = logging.getLogger(__name__)
 
 
 def sanitize_filename(name):
-    """Очищает имя файла от недопустимых символов"""
     bad = '<>:"/\\|?*\n\r\t'
     return "".join("_" if c in bad else c for c in name).strip()[:200]
 
 
 def cleanup_old_files(temp_dir):
-    """Удаляет старые временные файлы"""
     try:
         for file in Path(temp_dir).glob("*"):
             if file.is_file():
@@ -28,5 +23,4 @@ def cleanup_old_files(temp_dir):
 
 
 def ensure_temp_dir(temp_dir):
-    """Создает временную директорию если её нет"""
     os.makedirs(temp_dir, exist_ok=True)
