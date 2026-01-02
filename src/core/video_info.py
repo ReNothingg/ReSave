@@ -1,0 +1,69 @@
+import logging
+import yt_dlp
+import os
+
+logger = logging.getLogger(__name__)
+
+cookie_path = os.path.abspath("cookies.txt")
+
+
+def fetch_video_info(url):
+    try:
+        if "tiktok.com" in url and "/photo/" in url:
+            return {
+                'title': 'TikTok фото',
+                'thumbnail': 'https://cdn-icons-png.flaticon.com/512/3046/3046121.png',
+                'duration': None,
+                'uploader': 'TikTok',
+                'is_tiktok_photo': True
+            }
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "skip_download": True,
+            "socket_timeout": 10,
+            "cookiefile": cookie_path,
+            "nocheckcertificate": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info
+
+    except Exception as e:
+        logger.error(f"Ошибка получения информации о видео: {e}")
+        return None
+
+
+def check_subtitles_available(url):
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "skip_download": True,
+            "socket_timeout": 5,
+            "cookiefile": cookie_path,
+            "nocheckcertificate": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            if not info:
+                return False
+
+            subtitles = info.get('subtitles', {})
+            auto_captions = info.get('automatic_captions', {})
+
+            has_subtitles = bool(subtitles or auto_captions)
+
+            return has_subtitles
+
+    except Exception as e:
+        logger.warning(f"Ошибка при проверке субтитров: {e}")
+        return False

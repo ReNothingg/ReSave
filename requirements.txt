@@ -1,0 +1,9 @@
+pyTelegramBotAPI>=4.10.0
+yt-dlp
+aiohttp>=3.8.0
+aiofiles>=23.0.0
+cachetools>=5.3.0
+Pillow>=10.0.0
+requests>=2.31.0
+gallery-dl
+python-dotenv
