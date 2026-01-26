@@ -90,15 +90,15 @@ def handle_download_task(task, bot, temp_dir):
         if not task.cancel_event.is_set():
             logger.exception(f"Ошибка при скачивании и отправке файла: {e}")
 
-            error_msg = error_handler.handle_error(e)
+            from ..utils.message_templates import ErrorMessages
+            user_message = ErrorMessages.format_error_with_suggestion(str(e))
 
             if not task.is_inline and not task.silent_mode:
                 try:
-                    bot.edit_message_text(error_msg.user_message, task.chat_id, task.message_id)
+                    bot.edit_message_text(user_message, task.chat_id, task.message_id)
                 except:
                     pass
 
-            logger.warning(error_msg.log_message)
             task.error = str(e)
             raise
     finally:
@@ -249,9 +249,12 @@ def _convert_to_gif_and_send(task, video_path, bot):
             raise Exception("Не удалось создать GIF. Ошибка конвертации.")
 
         title = task.info.get("title") or "animation"
+        from ..utils.message_templates import MessageTemplate
+        gif_caption = MessageTemplate.format_gif_caption(title, task.url)
         with open(gif_path, 'rb') as f:
-            bot.send_animation(task.chat_id, f, caption=f"✨ {title}\n\n@ReSafeBot",
-                              reply_to_message_id=task.reply_to_id)
+            bot.send_animation(task.chat_id, f, caption=gif_caption,
+                              reply_to_message_id=task.reply_to_id,
+                              parse_mode='Markdown')
 
         if not task.silent_mode:
             bot.delete_message(task.chat_id, task.message_id)
@@ -398,9 +401,12 @@ def _download_and_send_subtitles(task, bot, temp_dir):
             if idx > 0:
                 time.sleep(1)
 
+            from ..utils.message_templates import MessageTemplate
+            sub_caption = MessageTemplate.format_subtitles_caption(original_title, task.url)
             with open(srt_path, 'rb') as f:
-                bot.send_document(task.chat_id, f, caption=f"📝 Субтитры для: {original_title}",
-                                 reply_to_message_id=task.reply_to_id)
+                bot.send_document(task.chat_id, f, caption=sub_caption,
+                                 reply_to_message_id=task.reply_to_id,
+                                 parse_mode='Markdown')
             os.remove(srt_path)
 
         if not task.silent_mode:
@@ -409,15 +415,10 @@ def _download_and_send_subtitles(task, bot, temp_dir):
     except Exception as e:
         logger.error(f"Ошибка скачивания субтитров: {e}")
         if not task.silent_mode:
-            error_text = str(e)
-            if "429" in error_text:
-                error_msg = "❌ Слишком много запросов к серверу. Попробуйте позже."
-            elif "не найдены" in error_text.lower() or "subtitles" in error_text.lower():
-                error_msg = "❌ Субтитры для этого видео недоступны."
-            else:
-                error_msg = f"❌ Не удалось скачать субтитры"
+            from ..utils.message_templates import ErrorMessages
+            error_text = ErrorMessages.format_error_with_suggestion(str(e))
             try:
-                bot.edit_message_text(error_msg, task.chat_id, task.message_id)
+                bot.edit_message_text(error_text, task.chat_id, task.message_id)
             except:
                 pass
         raise
@@ -467,9 +468,10 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
                 message = bot.send_photo(
                     task.chat_id,
                     f,
-                    caption=f"🖼️ Фото из TikTok\n\n@ReSafeBot",
+                    caption=MessageTemplate.format_tiktok_photo_caption(task.url),
                     reply_to_message_id=task.reply_to_id,
-                    timeout=60
+                    timeout=60,
+                    parse_mode='Markdown'
                 )
 
             logger.info(f"Фото успешно отправлено в чат {task.chat_id}")
@@ -490,9 +492,10 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
             for idx, file_path in enumerate(downloaded_files):
                 with open(file_path, 'rb') as f:
                     if idx == 0:
+                        caption = MessageTemplate.format_tiktok_photo_caption(task.url, len(downloaded_files))
                         media = types.InputMediaPhoto(
                             media=f.read(),
-                            caption=f"🖼️ Фото из TikTok ({idx + 1}/{len(downloaded_files)})\n\n@ReSafeBot"
+                            caption=caption
                         )
                     else:
                         media = types.InputMediaPhoto(media=f.read())
@@ -510,7 +513,7 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
                 logger.warning(f"Ошибка при отправке группы фото, отправляю по отдельности: {e}")
 
                 for idx, file_path in enumerate(downloaded_files):
-                    caption = f"🖼️ Фото {idx + 1}/{len(downloaded_files)}\n\n@ReSafeBot"
+                    caption = MessageTemplate.format_tiktok_photo_caption(task.url) if idx == 0 else f"🖼️ Фото {idx + 1}/{len(downloaded_files)}"
                     with open(file_path, 'rb') as f:
                         bot.send_photo(
                             task.chat_id,
@@ -542,12 +545,11 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
         logger.exception(f"Ошибка при скачивании TikTok фото: {e}")
 
         if not task.silent_mode:
-            error_msg = str(e)
-            if "не найдены" in error_msg.lower() or "изображения" in error_msg.lower():
-                error_text = "❌ Не удалось найти фото в этом посте. Возможно, это не пост с фото."
-            else:
-                error_text = f"❌ Ошибка при скачивании: {error_msg[:100]}"
-
+            from ..utils.message_templates import ErrorMessages
+            error_text = ErrorMessages.format_error_with_suggestion(
+                str(e),
+                "Убедитесь, что это пост с фото или видео, а не рилс"
+            )
             try:
                 bot.edit_message_text(error_text, task.chat_id, task.message_id)
             except:
@@ -656,13 +658,10 @@ def _download_and_send_thumbnail(task, bot, temp_dir):
             bot.send_document(
                 task.chat_id,
                 f,
-                caption=f"🖼️ Превью видео (без сжатия)\n"
-                       f"📹 {title}{resolution_info}\n"
-                       f"📁 Размер: {size_str}\n"
-                       f"📎 Формат: {ext.upper()}\n\n"
-                       f"@ReSafeBot",
+                caption=MessageTemplate.format_thumbnail_caption(title, task.url),
                 visible_file_name=file_name,
-                reply_to_message_id=task.reply_to_id
+                reply_to_message_id=task.reply_to_id,
+                parse_mode='Markdown'
             )
 
         if not task.silent_mode:
@@ -674,12 +673,10 @@ def _download_and_send_thumbnail(task, bot, temp_dir):
     except Exception as e:
         logger.exception(f"Ошибка при скачивании превью: {e}")
         if not task.silent_mode:
+            from ..utils.message_templates import ErrorMessages
+            error_text = ErrorMessages.format_error_with_suggestion(str(e))
             try:
-                bot.edit_message_text(
-                    f"❌ К сожалению, не удалось скачать превью: {str(e)}",
-                    task.chat_id,
-                    task.message_id
-                )
+                bot.edit_message_text(error_text, task.chat_id, task.message_id)
             except:
                 pass
         raise
@@ -695,6 +692,7 @@ def _download_and_send_thumbnail(task, bot, temp_dir):
 def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retries=3):
     from ..utils.retry_manager import get_smart_retry_manager, UPLOAD_RETRY_CONFIG
     from ..utils.error_handler import get_error_handler
+    from ..utils.message_templates import MessageTemplate, ErrorMessages
 
     error_handler = get_error_handler()
     retry_manager = get_smart_retry_manager(UPLOAD_RETRY_CONFIG)
@@ -705,8 +703,11 @@ def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retrie
     original_title = task.info.get("title") or task.info.get("id") or "video"
 
     def send_operation():
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        
         with open(file_path, 'rb') as f:
             if task.action == "audio" and file_extension in audio_extensions:
+                # Для аудио используем встроенное название/исполнителя
                 bot.send_audio(
                     task.chat_id,
                     f,
@@ -717,7 +718,13 @@ def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retrie
                     reply_to_message_id=task.reply_to_id
                 )
             else:
-                caption = f"{original_title}\n\n👉 [Оригинал]({task.url})\n\n@ReSafeBot"
+                # Для видео используем единый шаблон
+                caption = MessageTemplate.format_caption(
+                    title=original_title,
+                    url=task.url,
+                    action="video",
+                    file_size=file_size_mb
+                )
                 bot.send_video(
                     task.chat_id,
                     f,

@@ -167,10 +167,10 @@ def register_download_handlers(bot):
                         return "too_large", info
 
                     try:
+                        from ..utils.message_templates import MessageTemplate
                         with open(file_path, 'rb') as f:
 
-
-                            caption = f"{title}\n\n👉 [Оригинал]({query_text})\n\n@ReSafeBot"
+                            caption = MessageTemplate.format_inline_caption(title, query_text)
                             message = bot.send_video(
                                 user_id,
                                 f,
@@ -216,13 +216,15 @@ def register_download_handlers(bot):
             file_id, info = quick_download()
 
             if file_id and file_id not in ["timeout", "too_long", "too_large"]:
+                from ..utils.message_templates import MessageTemplate
                 title = info.get("title", "Video")
+                caption = MessageTemplate.format_inline_caption(title, query_text)
                 result = types.InlineQueryResultCachedVideo(
                     id=f'video_{uuid4().hex[:8]}',
                     video_file_id=file_id,
                     title=title,
                     description='720p Ready to send',
-                    caption=f"{title}\n\n@ReSafeBot"
+                    caption=caption
                 )
                 bot.answer_inline_query(
                     query_id,
