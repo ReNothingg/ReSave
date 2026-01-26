@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 def sanitize_filename(name):
     bad = '<>:"/\\|?*\n\r\t'
-    return "".join("_" if c in bad else c for c in name).strip()[:200]
+    return "".join("_" if c in bad else c for c in name).strip()
 
 
 def cleanup_old_files(temp_dir):
