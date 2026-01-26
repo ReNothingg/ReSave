@@ -436,7 +436,7 @@ def handle_group_download(url, message, bot):
             action="medium",
             reply_to_id=message.message_id,
             silent_mode=True
-        )
+        ) 
 
     except Exception as e:
         logger.error(f"Ошибка при автоматической обработке ссылки из группы {message.chat.id}: {e}")
