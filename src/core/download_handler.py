@@ -11,6 +11,7 @@ from PIL import Image
 from telebot import types
 
 from ..utils.file_utils import sanitize_filename
+from ..utils.admin_notifier import notify_admins
 from .user_stats import get_stats_manager
 import config
 
@@ -90,8 +91,27 @@ def handle_download_task(task, bot, temp_dir):
         if not task.cancel_event.is_set():
             logger.exception(f"Ошибка при скачивании и отправке файла: {e}")
 
+            error_text = str(e)
+            if "ffmpeg" in error_text.lower():
+                notify_admins(
+                    bot,
+                    (
+                        "⚠️ [ReSave] FFmpeg issue detected\n"
+                        f"Chat ID: {task.chat_id}\n"
+                        f"Action: {task.action}\n"
+                        f"URL: {task.url}\n"
+                        f"Error: {error_text}"
+                    )
+                )
+
             from ..utils.message_templates import ErrorMessages
-            user_message = ErrorMessages.format_error_with_suggestion(str(e))
+            if "ffmpeg" in error_text.lower():
+                if task.action == "gif":
+                    user_message = ErrorMessages.GIF_FFMPEG_MISSING
+                else:
+                    user_message = "⚠️ FFmpeg не установлен на сервере. Эта функция временно недоступна."
+            else:
+                user_message = ErrorMessages.format_error_with_suggestion(error_text)
 
             if not task.is_inline and not task.silent_mode:
                 try:
@@ -115,6 +135,9 @@ def _download_and_send_video(task, bot, temp_dir):
     output_path = os.path.join(temp_dir, f"{task.chat_id}_{timestamp}_{title}")
 
     fmt, post, output_template = _get_format_options(task, output_path)
+
+    if task.action in {"audio", "gif"} and not shutil.which("ffmpeg"):
+        raise RuntimeError("FFmpeg is not installed on server")
 
     if not task.is_inline and not task.silent_mode:
         bot.edit_message_text("⏬ Скачиваю видео...", task.chat_id, task.message_id)
@@ -214,13 +237,15 @@ def _get_format_options(task, output_path):
 
 def _convert_to_gif_and_send(task, video_path, bot):
     gif_path = Path(video_path).with_suffix('.gif')
+    temp_mp4 = None
     try:
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("FFmpeg is not installed on server")
         if not task.silent_mode:
             bot.edit_message_text("✨ Создаю GIF-анимацию... Это может занять до минуты. 🧙‍♂️",
                                  task.chat_id, task.message_id)
 
         video_to_convert = video_path
-        temp_mp4 = None
 
         if not video_path.endswith('.mp4'):
             logger.info(f"Конвертирую {Path(video_path).suffix} в MP4 перед созданием GIF")
