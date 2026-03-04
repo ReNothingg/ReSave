@@ -205,7 +205,6 @@ class UIManager:
             return f"{minutes:02d}:{secs:02d}"
 
 
-# Глобальный экземпляр UI Manager
 _ui_manager = None
 
 

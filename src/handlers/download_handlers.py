@@ -175,7 +175,7 @@ def register_download_handlers(bot):
                                 user_id,
                                 f,
                                 caption=caption,
-                                parse_mode='Markdown',
+                                parse_mode='HTML',
                                 supports_streaming=True,
                                 timeout=60
                             )
@@ -224,7 +224,8 @@ def register_download_handlers(bot):
                     video_file_id=file_id,
                     title=title,
                     description='720p Ready to send',
-                    caption=caption
+                    caption=caption,
+                    parse_mode='HTML'
                 )
                 bot.answer_inline_query(
                     query_id,

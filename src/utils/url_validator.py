@@ -5,7 +5,6 @@ from typing import Tuple
 logger = logging.getLogger(__name__)
 
 class URLValidator:
-    # Поддерживаемые платформы
     SUPPORTED_PLATFORMS = {
         "youtube": [r"youtube\.com", r"youtu\.be"],
         "tiktok": [r"tiktok\.com"],
@@ -136,31 +135,26 @@ class URLValidator:
             platform = self._detect_platform(url)
 
         if platform == "youtube":
-            # youtube.com/watch?v=ID или youtu.be/ID
             match = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([^&?\s]+)", url)
             if match:
                 return match.group(1)
 
         elif platform == "tiktok":
-            # tiktok.com/@username/video/ID
             match = re.search(r"/video/(\d+)", url)
             if match:
                 return match.group(1)
 
         elif platform == "instagram":
-            # instagram.com/p/ID/ или /reel/ID/
             match = re.search(r"(?:/p/|/reel/)([a-zA-Z0-9_-]+)", url)
             if match:
                 return match.group(1)
 
         elif platform == "twitter" or platform == "x":
-            # twitter.com/.../status/ID
             match = re.search(r"/status/(\d+)", url)
             if match:
                 return match.group(1)
 
         elif platform == "vimeo":
-            # vimeo.com/ID
             match = re.search(r"vimeo\.com/(\d+)", url)
             if match:
                 return match.group(1)

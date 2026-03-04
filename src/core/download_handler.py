@@ -254,7 +254,7 @@ def _convert_to_gif_and_send(task, video_path, bot):
         with open(gif_path, 'rb') as f:
             bot.send_animation(task.chat_id, f, caption=gif_caption,
                               reply_to_message_id=task.reply_to_id,
-                              parse_mode='Markdown')
+                              parse_mode='HTML')
 
         if not task.silent_mode:
             bot.delete_message(task.chat_id, task.message_id)
@@ -406,7 +406,7 @@ def _download_and_send_subtitles(task, bot, temp_dir):
             with open(srt_path, 'rb') as f:
                 bot.send_document(task.chat_id, f, caption=sub_caption,
                                  reply_to_message_id=task.reply_to_id,
-                                 parse_mode='Markdown')
+                                 parse_mode='HTML')
             os.remove(srt_path)
 
         if not task.silent_mode:
@@ -471,7 +471,7 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
                     caption=MessageTemplate.format_tiktok_photo_caption(task.url),
                     reply_to_message_id=task.reply_to_id,
                     timeout=60,
-                    parse_mode='Markdown'
+                    parse_mode='HTML'
                 )
 
             logger.info(f"Фото успешно отправлено в чат {task.chat_id}")
@@ -495,7 +495,8 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
                         caption = MessageTemplate.format_tiktok_photo_caption(task.url, len(downloaded_files))
                         media = types.InputMediaPhoto(
                             media=f.read(),
-                            caption=caption
+                            caption=caption,
+                            parse_mode='HTML'
                         )
                     else:
                         media = types.InputMediaPhoto(media=f.read())
@@ -520,7 +521,8 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
                             f,
                             caption=caption,
                             reply_to_message_id=task.reply_to_id if idx == 0 else None,
-                            timeout=60
+                            timeout=60,
+                            parse_mode='HTML'
                         )
                     time.sleep(0.5)
 
@@ -661,7 +663,7 @@ def _download_and_send_thumbnail(task, bot, temp_dir):
                 caption=MessageTemplate.format_thumbnail_caption(title, task.url),
                 visible_file_name=file_name,
                 reply_to_message_id=task.reply_to_id,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
 
         if not task.silent_mode:
@@ -729,7 +731,7 @@ def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retrie
                     task.chat_id,
                     f,
                     caption=caption,
-                    parse_mode='Markdown',
+                    parse_mode='HTML',
                     duration=task.info.get('duration'),
                     width=task.info.get('width'),
                     height=task.info.get('height'),

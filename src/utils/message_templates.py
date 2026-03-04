@@ -1,28 +1,18 @@
-"""
-Единые шаблоны сообщений и централизованные тексты для ошибок
-"""
+from html import escape
 from typing import Optional
-from urllib.parse import quote
 
 class MessageTemplate:
-    """Шаблоны сообщений для всех режимов отправки"""
-    
+    @staticmethod
+    def _escape_text(value: Optional[str]) -> str:
+        return escape(str(value or ""))
+
+    @staticmethod
+    def _format_original_link(url: str) -> str:
+        safe_url = escape(str(url), quote=True)
+        return f'👉 <a href="{safe_url}">Оригинал</a>'
+
     @staticmethod
     def format_caption(title: str, url: str, action: str = "video", file_size: Optional[float] = None) -> str:
-        """
-        Единый шаблон капшена для всех файлов (видео, аудио, фото, GIF, субтитры и т.д.)
-        
-        Args:
-            title: Название видео (полное, без сокращений)
-            url: Ссылка на оригинальное видео
-            action: Тип загружаемого файла (video, audio, gif, photo, subtitles, thumbnail)
-            file_size: Размер файла в MB (опционально)
-        
-        Returns:
-            Форматированный текст капшена
-        """
-        
-        # Иконки для разных типов файлов
         icons = {
             "video": "🎬",
             "audio": "🎵",
@@ -34,20 +24,13 @@ class MessageTemplate:
         
         icon = icons.get(action, "📁")
         
-        # Основная информация
-        caption = f"{icon} {title}\n\n"
+        safe_title = MessageTemplate._escape_text(title)
+        caption = f"{icon} {safe_title}\n\n"
         
-        # Размер файла (если передан)
         if file_size:
             caption += f"📁 Размер: {file_size:.1f} MB\n"
         
-        # Ссылка на оригинал
-        try:
-            # Экранируем спецсимволы для Markdown
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            caption += f"👉 [Оригинал]({safe_url})\n\n"
-        except:
-            caption += f"👉 Оригинал: {url}\n\n"
+        caption += f"{MessageTemplate._format_original_link(url)}\n\n"
         
         caption += "@ReSafeBot"
         
@@ -55,76 +38,53 @@ class MessageTemplate:
     
     @staticmethod
     def format_inline_caption(title: str, url: str) -> str:
-        """Капшен для inline-режима (более компактный)"""
-        try:
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            return f"🎬 {title}\n\n👉 [Оригинал]({safe_url})\n\n@ReSafeBot"
-        except:
-            return f"🎬 {title}\n\n👉 Оригинал: {url}\n\n@ReSafeBot"
+        safe_title = MessageTemplate._escape_text(title)
+        return f"🎬 {safe_title}\n\n{MessageTemplate._format_original_link(url)}\n\n@ReSafeBot"
     
     @staticmethod
     def format_thumbnail_caption(title: str, url: str, width: Optional[int] = None, height: Optional[int] = None) -> str:
-        """Специальный капшен для превью"""
+        safe_title = MessageTemplate._escape_text(title)
         caption = f"🖼️ Превью видео (без сжатия)\n"
-        caption += f"📹 {title}\n"
+        caption += f"📹 {safe_title}\n"
         
         if width and height:
             caption += f"📐 Разрешение: {width}×{height}\n"
         
-        try:
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            caption += f"\n👉 [Оригинал]({safe_url})\n\n"
-        except:
-            caption += f"\n👉 Оригинал: {url}\n\n"
+        caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
         caption += "@ReSafeBot"
         return caption
     
     @staticmethod
     def format_gif_caption(title: str, url: str) -> str:
-        """Специальный капшен для GIF"""
-        try:
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            return f"✨ {title}\n\n👉 [Оригинал]({safe_url})\n\n@ReSafeBot"
-        except:
-            return f"✨ {title}\n\n👉 Оригинал: {url}\n\n@ReSafeBot"
+        safe_title = MessageTemplate._escape_text(title)
+        return f"✨ {safe_title}\n\n{MessageTemplate._format_original_link(url)}\n\n@ReSafeBot"
     
     @staticmethod
     def format_subtitles_caption(title: str, url: str, language: str = "en/ru") -> str:
-        """Специальный капшен для субтитров"""
-        caption = f"📝 Субтитры для: {title}\n"
-        caption += f"🗣️ Языки: {language}\n"
-        
-        try:
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            caption += f"\n👉 [Оригинал]({safe_url})\n\n"
-        except:
-            caption += f"\n👉 Оригинал: {url}\n\n"
+        safe_title = MessageTemplate._escape_text(title)
+        safe_language = MessageTemplate._escape_text(language)
+        caption = f"📝 Субтитры для: {safe_title}\n"
+        caption += f"🗣️ Языки: {safe_language}\n"
+        caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
         caption += "@ReSafeBot"
         return caption
     
     @staticmethod
     def format_tiktok_photo_caption(url: str, count: Optional[int] = None) -> str:
-        """Специальный капшен для TikTok фото"""
         if count and count > 1:
             caption = f"🖼️ Фото из TikTok ({count} шт)\n"
         else:
             caption = f"🖼️ Фото из TikTok\n"
         
-        try:
-            safe_url = url.replace("[", r"\[").replace("]", r"\]")
-            caption += f"\n👉 [Оригинал]({safe_url})\n\n"
-        except:
-            caption += f"\n👉 Оригинал: {url}\n\n"
+        caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
         caption += "@ReSafeBot"
         return caption
 
 
-class ErrorMessages:
-    """Централизованные дружелюбные сообщения об ошибках"""
-    
+class ErrorMessages:    
     # Ошибки, связанные с платформой/видео
     UNAVAILABLE_VIDEO = "❌ Это видео недоступно или было удалено с платформы."
     PRIVATE_VIDEO = "❌ Это приватное видео. Доступ запрещён."
@@ -181,18 +141,8 @@ class ErrorMessages:
     
     @staticmethod
     def get_user_message(error_str: str) -> str:
-        """
-        Преобразует техническую ошибку в дружелюбное пользовательское сообщение
-        
-        Args:
-            error_str: Строка технической ошибки
-        
-        Returns:
-            Дружелюбное сообщение для пользователя
-        """
         error_lower = error_str.lower()
         
-        # Проверка различных типов ошибок
         checks = [
             ("unavailable", ErrorMessages.UNAVAILABLE_VIDEO),
             ("private", ErrorMessages.PRIVATE_VIDEO),
@@ -229,22 +179,11 @@ class ErrorMessages:
     
     @staticmethod
     def format_error_with_suggestion(error_str: str, suggestion: str = None) -> str:
-        """
-        Форматирует ошибку с рекомендацией
-        
-        Args:
-            error_str: Основное сообщение об ошибке
-            suggestion: Рекомендация по решению (опционально)
-        
-        Returns:
-            Отформатированное сообщение об ошибке с рекомендацией
-        """
         message = ErrorMessages.get_user_message(error_str)
         
         if suggestion:
             message += f"\n\n💡 {suggestion}"
         else:
-            # Стандартные рекомендации
             if "timeout" in error_str.lower():
                 message += "\n\n💡 Попробуйте позже или выберите более низкое качество."
             elif "too many requests" in error_str.lower():
