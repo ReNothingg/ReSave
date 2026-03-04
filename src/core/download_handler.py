@@ -12,6 +12,7 @@ from telebot import types
 
 from ..utils.file_utils import sanitize_filename
 from ..utils.admin_notifier import notify_admins
+from ..utils.message_templates import MessageTemplate
 from .user_stats import get_stats_manager
 import config
 
@@ -731,18 +732,24 @@ def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retrie
 
     def send_operation():
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        duration = task.info.get("duration")
+        safe_duration = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
         
         with open(file_path, 'rb') as f:
             if task.action == "audio" and file_extension in audio_extensions:
                 # Для аудио используем встроенное название/исполнителя
+                audio_kwargs = {}
+                if safe_duration is not None:
+                    audio_kwargs["duration"] = safe_duration
+
                 bot.send_audio(
                     task.chat_id,
                     f,
                     title=original_title,
                     performer=task.info.get('uploader', 'Unknown'),
-                    duration=task.info.get('duration'),
                     timeout=300,
-                    reply_to_message_id=task.reply_to_id
+                    reply_to_message_id=task.reply_to_id,
+                    **audio_kwargs
                 )
             else:
                 # Для видео используем единый шаблон
@@ -757,9 +764,6 @@ def _send_file_with_retry(task, file_path, title, bot, retry_count=0, max_retrie
                     f,
                     caption=caption,
                     parse_mode='HTML',
-                    duration=task.info.get('duration'),
-                    width=task.info.get('width'),
-                    height=task.info.get('height'),
                     supports_streaming=True,
                     timeout=600,
                     reply_to_message_id=task.reply_to_id

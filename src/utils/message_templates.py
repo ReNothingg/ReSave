@@ -106,6 +106,7 @@ class ErrorMessages:
     # Ошибки с форматом
     UNSUPPORTED_FORMAT = "🎯 Этот формат не поддерживается."
     CONVERSION_ERROR = "⚙️ Ошибка при конвертации файла. Попробуйте другое качество."
+    QUALITY_NOT_AVAILABLE = "🎯 Для этого видео нет выбранного качества. Попробуйте другое качество."
     
     # Ошибки с лимитами
     FILE_SIZE_LIMIT = "📦 Файл слишком большой. Спробуйте скачать в более низком качестве (480p, MP3)."
@@ -158,6 +159,9 @@ class ErrorMessages:
             ("connection", ErrorMessages.NETWORK_ERROR),
             ("network", ErrorMessages.NETWORK_ERROR),
             ("refused", ErrorMessages.NETWORK_ERROR),
+            ("failed to establish a new connection", ErrorMessages.NETWORK_ERROR),
+            ("winerror 10061", ErrorMessages.NETWORK_ERROR),
+            ("timed out", ErrorMessages.DOWNLOAD_TIMEOUT),
             
             ("subtitles", ErrorMessages.SUBTITLES_NOT_FOUND),
             ("thumbnail", ErrorMessages.THUMBNAIL_NOT_FOUND),
@@ -169,6 +173,13 @@ class ErrorMessages:
             ("malformed", ErrorMessages.MALFORMED_URL),
             
             ("file too large", ErrorMessages.FILE_TOO_LARGE),
+            ("request entity too large", ErrorMessages.FILE_TOO_LARGE),
+            ("entity too large", ErrorMessages.FILE_TOO_LARGE),
+            ("file is too big", ErrorMessages.FILE_TOO_LARGE),
+            ("requested format is not available", ErrorMessages.QUALITY_NOT_AVAILABLE),
+            ("requested format not available", ErrorMessages.QUALITY_NOT_AVAILABLE),
+            ("no video formats found", ErrorMessages.QUALITY_NOT_AVAILABLE),
+            ("ffmpeg is not installed", ErrorMessages.CONVERSION_ERROR),
         ]
         
         for keyword, message in checks:
@@ -190,5 +201,9 @@ class ErrorMessages:
                 message += "\n\n💡 Подождите 1-2 минуты и повторите попытку."
             elif "invalid" in error_str.lower():
                 message += "\n\n💡 Убедитесь, что ссылка полная (начинается с https://)."
+            elif "requested format is not available" in error_str.lower():
+                message += "\n\n💡 Откройте кнопки качества и выберите другой вариант."
+            elif "entity too large" in error_str.lower() or "file is too big" in error_str.lower():
+                message += "\n\n💡 Выберите более низкое качество (480p или MP3), чтобы уложиться в лимит Telegram."
         
         return message
