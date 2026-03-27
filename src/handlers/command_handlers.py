@@ -1,97 +1,88 @@
-"""
-/start, /help, /status, /cancel, /stats
-"""
 import logging
-from telebot import types
+import time
 from datetime import datetime
-from ..utils.safe_formatter_new import get_safe_formatter
+
+from aiogram import Router
+from aiogram.filters import Command, CommandStart
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+from ..core.user_stats import get_stats_manager
+from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
 
 
-def is_admin(user_id: int) -> bool:
-    import config
-    return user_id in config.ADMIN_IDS
-
-
-def register_command_handlers(bot):
-    from ..utils.ui_manager import get_ui_manager
-
+def register_command_handlers(router: Router):
     ui_manager = get_ui_manager()
 
-    @bot.message_handler(commands=['start'])
-    def send_welcome(message):
-        safe_formatter = get_safe_formatter()
+    async def send_welcome(message: Message):
+        welcome_text = "\n".join(
+            [
+                "Привет! Добро пожаловать в ReSave.",
+                "",
+                "Я скачиваю видео и медиа по ссылке с YouTube, TikTok, Instagram и других платформ.",
+                "",
+                "Как начать:",
+                "1. Отправьте ссылку на видео.",
+                "2. Выберите качество или формат.",
+                "3. Получите готовый файл.",
+                "",
+                "Inline-режим:",
+                "Введите @ReSafeBot и ссылку в любом чате.",
+                "",
+                "Поддерживаемые платформы:",
+                "YouTube, TikTok, Instagram, Twitter, Facebook, Vimeo, Twitch, Reddit.",
+            ]
+        )
+        await message.reply(welcome_text)
 
-        welcome_lines = [
-            f"Привет! Добро пожаловать в ReSave",
-            "",
-            "Я - удобный бот для скачивания видео с YouTube, TikTok, Instagram и многих других платформ.",
-            "",
-            "Как начать?",
-            "├ Просто отправьте ссылку на видео",
-            "├ Выберите качество",
-            "└ Наслаждайтесь!",
-            "",
-            "Inline-режим для любого чата:",
-            "Введите @ReSafeBot и ссылку - видео загрузится мгновенно!",
-            "",
-            "Поддерживаемые платформы:",
-            "YouTube • TikTok • Instagram • Twitter • Facebook • Vimeo • Twitch • Reddit",
-            "",
-            "Готовы? Отправьте ссылку прямо сейчас!"
-        ]
+    async def help_command(message: Message):
+        help_text = "\n".join(
+            [
+                "ReSave: инструкция",
+                "",
+                "Личные сообщения:",
+                "1. Отправьте ссылку.",
+                "2. Выберите качество или формат.",
+                "3. Дождитесь готового файла.",
+                "",
+                "Группы:",
+                "1. Добавьте бота в группу.",
+                "2. Отправьте ссылку.",
+                "3. Бот автоматически скачает видео в среднем качестве.",
+                "",
+                "Inline:",
+                "1. Введите @ReSafeBot [ссылка].",
+                "2. Подождите несколько секунд.",
+                "3. Отправьте готовое видео в чат.",
+                "",
+                "Если что-то сломалось, отправьте /start и попробуйте снова.",
+            ]
+        )
+        await message.reply(help_text)
 
-        welcome_text = "\n".join(welcome_lines)
-        safe_formatter.safe_reply_to(bot, message, welcome_text)
-
-    @bot.message_handler(commands=['help'])
-    def help_command(message):
-        safe_formatter = get_safe_formatter()
-
-        help_lines = [
-            "ReSave: Полная инструкция",
-            "",
-            "Обычный режим (в личных сообщениях):",
-            "1️⃣ Отправьте ссылку на видео в этот чат",
-            "2️⃣ Выберите качество или формат (видео/аудио/превью)",
-            "3️⃣ Получите готовый файл!",
-            "",
-            "Режим в группах:",
-            "1️⃣ Добавьте бота в группу",
-            "2️⃣ Отправьте ссылку на видео",
-            "3️⃣ Бот автоматически скачает видео в среднем качестве!",
-            "",
-            "Inline-режим (в любом чате):",
-            "1️⃣ Введите @ReSafeBot [ссылка]",
-            "2️⃣ Подождите 5-15 сек",
-            "3️⃣ Отправьте готовое видео в чат!",
-            "",
-            "Если что-то не так - напишите /start. Удачи!",
-        ]
-
-        help_text = "\n".join(help_lines)
-        safe_formatter.safe_reply_to(bot, message, help_text)
-
-    @bot.message_handler(commands=['status'])
-    def status_command(message):
+    async def status_command(message: Message):
         from .download_handlers import get_download_manager
-        from ..utils.markdown_escape import format_safe_title
-        safe_formatter = get_safe_formatter()
 
         manager = get_download_manager()
+        if manager is None:
+            await message.reply("Менеджер загрузок еще не инициализирован.")
+            return
 
         with manager.lock:
-            user_tasks = {k: v for k, v in manager.tasks.items()
-                          if v.chat_id == message.chat.id and v.status in ["downloading", "pending"]}
+            user_tasks = {
+                task_id: task
+                for task_id, task in manager.tasks.items()
+                if task.chat_id == message.chat.id and task.status in {"downloading", "pending"}
+            }
 
         if not user_tasks:
-            safe_formatter.safe_reply_to(bot, message, f"У вас нет активных загрузок. Отправьте новую ссылку!")
+            await message.reply("У вас нет активных загрузок. Отправьте новую ссылку.")
             return
 
         status_lines = ["Ваши загрузки в работе", ""]
 
-        for task_id, task in user_tasks.items():
+        for task in user_tasks.values():
             title = task.info.get("title", "Неизвестное видео")
 
             if task.status == "downloading":
@@ -99,44 +90,55 @@ def register_command_handlers(bot):
                 progress_text = f"{int(task.progress * 100)}% {progress_bar}"
 
                 if task.started_at and task.progress > 0.05:
-                    import time
                     elapsed = time.time() - task.started_at
                     total_estimated = elapsed / task.progress
                     remaining = total_estimated - elapsed
                     if remaining > 0:
                         remaining_str = f"Осталось: {manager._format_time(remaining)}"
                     else:
-                        remaining_str = f"Завершается..."
+                        remaining_str = "Завершается..."
                 else:
-                    remaining_str = f"Вычисляется..."
+                    remaining_str = "Вычисляется..."
 
-                status_lines.append(f"{title}")
+                status_lines.append(title)
                 status_lines.append(f"├ Загрузка: {progress_text}")
-                status_lines.append(f"└ {remaining_str}\n")
+                status_lines.append(f"└ {remaining_str}")
+                status_lines.append("")
             else:
-                status_lines.append(f"{title}")
-                status_lines.append(f"└ В очереди (скоро начнётся)\n")
+                status_lines.append(title)
+                status_lines.append("└ В очереди")
+                status_lines.append("")
 
-        keyboard = types.InlineKeyboardMarkup()
-        keyboard.add(types.InlineKeyboardButton(
-            "❌ Отменить все",
-            callback_data="cancel_all_downloads"
-        ))
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить все",
+                        callback_data="cancel_all_downloads",
+                    )
+                ]
+            ]
+        )
 
-        status_text = "\n".join(status_lines)
-        safe_formatter.safe_reply_to(bot, message, status_text, reply_markup=keyboard)
+        await message.reply("\n".join(status_lines).strip(), reply_markup=keyboard)
 
-    @bot.message_handler(is_cancel_download=True)
-    def cancel_download(message):
+    async def cancel_download(message: Message):
         from .download_handlers import get_download_manager
+
         manager = get_download_manager()
+        if manager is None:
+            await message.reply("Менеджер загрузок еще не инициализирован.")
+            return
 
         with manager.lock:
-            user_tasks = {k: v for k, v in manager.tasks.items()
-                         if v.chat_id == message.chat.id and v.status in ["downloading", "pending"]}
+            user_tasks = {
+                task_id: task
+                for task_id, task in manager.tasks.items()
+                if task.chat_id == message.chat.id and task.status in {"downloading", "pending"}
+            }
 
         if not user_tasks:
-            bot.reply_to(message, f"{ui_manager.emojis['pending']} Нет активных загрузок для отмены.")
+            await message.reply(f"{ui_manager.emojis['pending']} Нет активных загрузок для отмены.")
             return
 
         cancelled_count = 0
@@ -144,54 +146,61 @@ def register_command_handlers(bot):
             if manager.cancel_task(task_id):
                 cancelled_count += 1
 
-        bot.reply_to(message, f"{ui_manager.emojis['success']} Отменено {cancelled_count} загрузок! Теперь можно начать новую. 📹")
+        await message.reply(
+            f"{ui_manager.emojis['success']} Отменено {cancelled_count} загрузок. "
+            "Теперь можно начать новую."
+        )
 
-    @bot.message_handler(commands=['stats'])
-    def stats_command(message):
-        from ..core.user_stats import get_stats_manager
-        safe_formatter = get_safe_formatter()
-
+    async def stats_command(message: Message):
         stats_manager = get_stats_manager()
         user_stats = stats_manager.get_user_stats(message.chat.id)
 
         stats_lines = ["Ваша статистика", ""]
 
         if user_stats.downloads_count == 0:
-            stats_lines.append("У вас ещё нет загрузок!")
-            stats_lines.append("")
-            stats_lines.append("Отправьте любую ссылку на видео, чтобы начать!")
+            stats_lines.extend(
+                [
+                    "У вас еще нет загрузок.",
+                    "",
+                    "Отправьте любую ссылку на видео, чтобы начать.",
+                ]
+            )
         else:
             stats_lines.append(f"Всего загрузок: {user_stats.downloads_count}")
             stats_lines.append(f"Видео: {user_stats.total_videos}")
             stats_lines.append(f"Аудио: {user_stats.total_audios}")
             stats_lines.append(f"Общий размер: {user_stats.total_size_mb:.1f} MB")
-            stats_lines.append("")
 
             if user_stats.failed_downloads > 0:
                 stats_lines.append(f"Ошибок загрузок: {user_stats.failed_downloads}")
-                stats_lines.append("")
 
             if user_stats.first_download_date:
                 first_date = datetime.fromisoformat(user_stats.first_download_date)
-                stats_lines.append(f"Первая загрузка: {first_date.strftime('%d.%m.%Y %H:%M')}")
+                stats_lines.append(
+                    f"Первая загрузка: {first_date.strftime('%d.%m.%Y %H:%M')}"
+                )
 
             if user_stats.last_download_date:
                 last_date = datetime.fromisoformat(user_stats.last_download_date)
-                stats_lines.append(f"Последняя загрузка: {last_date.strftime('%d.%m.%Y %H:%M')}")
+                stats_lines.append(
+                    f"Последняя загрузка: {last_date.strftime('%d.%m.%Y %H:%M')}"
+                )
 
             stats_lines.append("")
-            stats_lines.append("=" * 40)
-
             avg_size = user_stats.total_size_mb / user_stats.downloads_count
             stats_lines.append(f"Средний размер файла: {avg_size:.1f} MB")
 
-            if user_stats.total_videos > 0:
-                success_rate = ((user_stats.total_videos + user_stats.total_audios) /
-                              (user_stats.downloads_count + user_stats.failed_downloads) * 100)
+            total_attempts = user_stats.downloads_count + user_stats.failed_downloads
+            if total_attempts > 0:
+                success_rate = (
+                    (user_stats.total_videos + user_stats.total_audios) / total_attempts
+                ) * 100
                 stats_lines.append(f"Успешные загрузки: {success_rate:.1f}%")
 
-            stats_lines.append("")
-            stats_lines.append("Спасибо что используете ReSave!")
+        await message.reply("\n".join(stats_lines).strip())
 
-        stats_text = "\n".join(stats_lines)
-        safe_formatter.safe_reply_to(bot, message, stats_text)
+    router.message.register(send_welcome, CommandStart())
+    router.message.register(help_command, Command("help"))
+    router.message.register(status_command, Command("status"))
+    router.message.register(cancel_download, Command("cancel"))
+    router.message.register(stats_command, Command("stats"))

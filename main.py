@@ -1,24 +1,13 @@
-import sys
-import os
-import signal
-import logging
-import time
+import asyncio
 import io
+import logging
+import os
+import subprocess
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import telebot
 import config
-
-from src.utils.ffmpeg_handler import ensure_ffmpeg
-from src.utils.admin_notifier import notify_admins
-from src.utils.file_utils import cleanup_old_files, ensure_temp_dir
-from src.utils.telegram_bot_wrapper import TelegramBotWrapper
-from src.core.download_manager import DownloadManager
-from src.core.user_stats import get_stats_manager
-from src.handlers.command_handlers import register_command_handlers
-from src.handlers.download_handlers import register_download_handlers, set_download_manager
-from src.handlers.admin_handlers import register_admin_handlers
 
 
 class UnicodeStreamHandler(logging.StreamHandler):
@@ -26,6 +15,7 @@ class UnicodeStreamHandler(logging.StreamHandler):
         super().__init__(sys.stdout)
         if sys.platform == "win32":
             self.stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,45 +32,48 @@ def ensure_module(name, package=None):
     try:
         return __import__(name)
     except ImportError:
-        pkg = package or name
-        logger.info(f"Установка модуля {pkg}...")
-        import subprocess
-
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+        package_name = package or name
+        logger.info("Устанавливаю модуль %s...", package_name)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
         return __import__(name)
 
 
-def setup_bot_commands(bot):
+async def setup_bot_commands(bot, BotCommand, BotCommandScopeChat):
     commands = [
-        telebot.types.BotCommand("/start", "🚀 Перезапустить бота"),
-        telebot.types.BotCommand("/help", "📖 Помощь и инструкция"),
-        telebot.types.BotCommand("/status", "📊 Статус текущих загрузок"),
-        telebot.types.BotCommand("/stats", "📈 Ваша статистика"),
-        telebot.types.BotCommand("/cancel", "🚫 Отменить текущую загрузку"),
+        BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="help", description="Помощь и инструкция"),
+        BotCommand(command="status", description="Статус текущих загрузок"),
+        BotCommand(command="stats", description="Ваша статистика"),
+        BotCommand(command="cancel", description="Отменить текущую загрузку"),
     ]
-
     admin_commands = [
-        telebot.types.BotCommand("/admin", "🔐 Панель администратора"),
+        BotCommand(command="admin", description="Панель администратора"),
+        BotCommand(command="broadcast", description="Рассылка пользователям"),
+        BotCommand(command="stats_global", description="Глобальная статистика"),
     ]
 
-    bot.set_my_commands(commands)
+    await bot.set_my_commands(commands)
 
     for admin_id in config.ADMIN_IDS:
         try:
-            scope = telebot.types.BotCommandScopeChat(admin_id)
-            bot.set_my_commands(commands + admin_commands, scope=scope)
-        except Exception as e:
-            logger.debug(f"Не удалось установить команды для админа {admin_id}: {e}")
+            await bot.set_my_commands(
+                commands + admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id),
+            )
+        except Exception as exc:
+            logger.debug("Не удалось установить команды для админа %s: %s", admin_id, exc)
 
 
-class CancelDownloadFilter(telebot.custom_filters.SimpleCustomFilter):
-    key = "is_cancel_download"
+async def notify_admins_async(bot, text: str):
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception as exc:
+            logger.error("Не удалось уведомить администратора %s: %s", admin_id, exc)
 
-    def check(self, message):
-        return message.text and message.text.strip().lower() == "/cancel"
 
-
-def main():
+async def run():
+    ensure_module("aiogram")
     logger.info("Проверка требуемых модулей...")
     ensure_module("yt_dlp", "yt-dlp")
     ensure_module("aiohttp")
@@ -88,7 +81,25 @@ def main():
     ensure_module("PIL", "Pillow")
     ensure_module("gallery_dl", "gallery-dl")
 
+    from aiogram import Bot, Dispatcher, Router
+    from aiogram.fsm.storage.memory import MemoryStorage
+    from aiogram.types import BotCommand, BotCommandScopeChat
+
+    from src.core.download_manager import DownloadManager
+    from src.core.user_stats import get_stats_manager
+    from src.handlers.admin_handlers import register_admin_handlers
+    from src.handlers.command_handlers import register_command_handlers
+    from src.handlers.download_handlers import (
+        register_download_handlers,
+        set_download_manager,
+    )
+    from src.utils.aiogram_bot_adapter import AiogramSyncBotAdapter
+    from src.utils.ffmpeg_handler import ensure_ffmpeg
+    from src.utils.file_utils import cleanup_old_files, ensure_temp_dir
+    from src.utils.telegram_bot_wrapper import TelegramBotWrapper
+
     ensure_temp_dir(config.TEMP_DIR)
+    cleanup_old_files(config.TEMP_DIR)
 
     logger.info("Инициализация менеджера загрузок...")
     download_manager = DownloadManager(
@@ -99,11 +110,14 @@ def main():
     logger.info("Инициализация менеджера статистики...")
     get_stats_manager()
 
-    logger.info("Инициализация бота...")
-    bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode=None, threaded=True)
+    logger.info("Инициализация aiogram...")
+    bot = Bot(token=config.BOT_TOKEN)
+    dispatcher = Dispatcher(storage=MemoryStorage())
+    router = Router()
 
-    logger.info("Активация защиты от ошибок Markdown...")
-    TelegramBotWrapper(bot)
+    sync_bot = TelegramBotWrapper(
+        AiogramSyncBotAdapter(bot=bot, loop=asyncio.get_running_loop())
+    )
 
     logger.info("Проверка FFmpeg...")
     if not ensure_ffmpeg(auto_download=False):
@@ -112,51 +126,39 @@ def main():
             "Функции конвертации (GIF/аудио) могут быть недоступны."
         )
         logger.warning(warning_text)
-        notify_admins(bot, f"⚠️ [ReSave] {warning_text}")
+        await notify_admins_async(bot, f"⚠️ [ReSave] {warning_text}")
 
-    download_manager.set_bot(bot)
+    download_manager.set_bot(sync_bot)
     set_download_manager(download_manager)
 
-    logger.info("Регистрация обработчиков команд...")
-    register_command_handlers(bot)
+    logger.info("Регистрация aiogram-хендлеров...")
+    register_command_handlers(router)
+    register_download_handlers(router, sync_bot)
+    register_admin_handlers(router)
+    dispatcher.include_router(router)
 
-    logger.info("Регистрация обработчиков загрузок...")
-    register_download_handlers(bot)
-
-    logger.info("Регистрация админских команд...")
-    register_admin_handlers(bot)
-
-    setup_bot_commands(bot)
-    bot.add_custom_filter(CancelDownloadFilter())
-
-    def signal_handler(sig, frame):
-        logger.info("\n👋 Завершение работы ReSave...")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    cleanup_old_files(config.TEMP_DIR)
+    await setup_bot_commands(bot, BotCommand, BotCommandScopeChat)
 
     logger.info("=" * 50)
-    logger.info("ReSave запущен! (ReSave started!)")
-    logger.info("Inline режим активирован! (Inline mode enabled!)")
-    logger.info("Режим работы в группах активирован! (Group mode enabled!)")
-    logger.info("Видео загружается в фоне и появляется после готовности")
+    logger.info("ReSave запущен")
+    logger.info("Inline-режим активирован")
+    logger.info("Групповой режим активирован")
     logger.info("=" * 50)
 
     try:
-        bot.polling(
-            none_stop=True,
-            interval=0,
-            timeout=60,
-            allowed_updates=["message", "inline_query", "chosen_inline_result", "callback_query"],
+        await dispatcher.start_polling(
+            bot,
+            allowed_updates=dispatcher.resolve_used_update_types(),
         )
-    except Exception as e:
-        logger.error(f"❌ Ошибка polling: {e}")
-        notify_admins(bot, f"❌ [ReSave] Ошибка polling: {e}")
-        time.sleep(5)
-        main()
+    finally:
+        await bot.session.close()
+
+
+def main():
+    try:
+        asyncio.run(run())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Завершение работы ReSave...")
 
 
 if __name__ == "__main__":

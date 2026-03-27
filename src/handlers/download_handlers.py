@@ -1,12 +1,28 @@
-import os
+import asyncio
 import logging
+import os
 import threading
-from telebot import types
-import config
-from ..utils.safe_formatter_new import get_safe_formatter
-from ..utils.markdown_escape import escape_markdown
+import time
+from pathlib import Path
+from uuid import uuid4
 
-from ..core.models import InlineQuery
+import config
+from aiogram import Bot, Router
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedVideo,
+    InlineQueryResultsButton,
+    InputTextMessageContent,
+    Message,
+)
+
+from ..core.models import InlineQuery as InlineQueryCacheItem
+from ..utils.message_templates import MessageTemplate
+from ..utils.safe_formatter_new import get_safe_formatter
 
 logger = logging.getLogger(__name__)
 
@@ -23,70 +39,150 @@ def get_download_manager():
     return _download_manager
 
 
-def register_download_handlers(bot):
-    from ..core.video_info import fetch_video_info
-    from ..utils.file_utils import sanitize_filename
-    from uuid import uuid4
-    import hashlib
-    import time
-    import yt_dlp
-    from pathlib import Path
+def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text="🎬 Лучшее качество (авто)",
+                callback_data=f"dl_best_{message_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📹 Среднее качество (720p)",
+                callback_data=f"dl_medium_{message_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📱 Низкое качество (480p)",
+                callback_data=f"dl_low_{message_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🎵 Только аудио (MP3)",
+                callback_data=f"dl_audio_{message_id}",
+            )
+        ],
+    ]
+
+    duration = info.get("duration")
+    if duration and duration <= 30:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✨ Создать GIF",
+                    callback_data=f"dl_gif_{message_id}",
+                )
+            ]
+        )
+
+    subtitles = info.get("subtitles", {})
+    auto_captions = info.get("automatic_captions", {})
+    if subtitles or auto_captions:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="📝 Скачать субтитры (.srt)",
+                    callback_data=f"dl_subtitles_{message_id}",
+                )
+            ]
+        )
+
+    if info.get("thumbnail"):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🖼️ Скачать превью",
+                    callback_data=f"dl_thumbnail_{message_id}",
+                )
+            ]
+        )
+
+    resolution_buttons: list[InlineKeyboardButton] = []
+    for height in sorted(resolutions.keys(), reverse=True)[:3]:
+        fmt_info = resolutions[height]
+        size_bytes = fmt_info.get("filesize") or 0
+        size_suffix = f" (~{size_bytes / (1024 * 1024):.1f}MB)" if size_bytes else ""
+        resolution_buttons.append(
+            InlineKeyboardButton(
+                text=f"🎥 {height}p{size_suffix}",
+                callback_data=f"dl_res_{height}_{message_id}",
+            )
+        )
+
+    if resolution_buttons:
+        rows.append(resolution_buttons)
+
+    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_{message_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-    video_info_cache = {}
-    inline_queries = {}
+def register_download_handlers(router: Router, sync_bot):
+    video_info_cache: dict[int, dict] = {}
+    inline_queries: dict[str, InlineQueryCacheItem] = {}
     inline_cache_lock = threading.Lock()
 
-    @bot.inline_handler(func=lambda query: True)
-    def inline_query_handler(inline_query):
+    async def inline_query_handler(inline_query: InlineQuery, bot: Bot):
+        query_text = (inline_query.query or "").strip()
+        user_id = inline_query.from_user.id
+
         try:
-            query_text = inline_query.query.strip()
-            query_id = inline_query.id
-            user_id = inline_query.from_user.id
-
             if not query_text:
-                result = types.InlineQueryResultArticle(
-                    id='help',
-                    title='ReSave - Скачать видео',
-                    description='Введите ссылку на видео после @ReSafeBot',
-                    input_message_content=types.InputTextMessageContent(
-                        'ReSave поможет скачать видео быстро и просто!\n\n'
-                        '1. Введите @ReSafeBot\n'
-                        '2. Вставьте ссылку на видео\n'
-                        '3. Дождитесь загрузки (до 15 сек)\n'
-                        '4. Отправьте видео в чат\n\n'
-                        '@ReSafeBot'
+                result = InlineQueryResultArticle(
+                    id="help",
+                    title="ReSave - скачать видео",
+                    description="Введите ссылку после @ReSafeBot",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            "ReSave поможет скачать видео быстро и просто.\n\n"
+                            "1. Введите @ReSafeBot\n"
+                            "2. Вставьте ссылку на видео\n"
+                            "3. Подождите загрузки\n"
+                            "4. Отправьте результат в чат"
+                        )
                     ),
-                    thumbnail_url='https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg'
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                bot.answer_inline_query(query_id, [result], cache_time=1)
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                )
                 return
 
-            if not query_text.startswith(('http://', 'https://')):
-                bot.answer_inline_query(query_id, [], cache_time=1)
+            if not query_text.startswith(("http://", "https://")):
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[],
+                    cache_time=1,
+                    is_personal=True,
+                )
                 return
 
-
-            for q in inline_queries.values():
-                if q.url == query_text and q.status == "ready" and q.file_id:
-                    title = q.info.get("title", "Видео")
-                    result = types.InlineQueryResultCachedVideo(
-                        id=f'cached_{uuid4().hex[:8]}',
-                        video_file_id=q.file_id,
+            for cached_item in inline_queries.values():
+                if cached_item.url == query_text and cached_item.status == "ready" and cached_item.file_id:
+                    title = cached_item.info.get("title", "Видео")
+                    result = InlineQueryResultCachedVideo(
+                        id=f"cached_{uuid4().hex[:8]}",
+                        video_file_id=cached_item.file_id,
                         title=title,
-                        description='Готово к отправке (из кэша)',
-                        caption=f"{title}\n\n@ReSafeBot"
+                        description="Готово к отправке из кэша",
+                        caption=f"{title}\n\n@ReSafeBot",
                     )
-                    bot.answer_inline_query(
-                        query_id,
-                        [result],
+                    await bot.answer_inline_query(
+                        inline_query_id=inline_query.id,
+                        results=[result],
                         cache_time=300,
-                        is_personal=True
+                        is_personal=True,
                     )
                     return
 
-
             def quick_download():
+                import yt_dlp
+
                 try:
                     ydl_opts = {
                         "quiet": True,
@@ -104,14 +200,19 @@ def register_download_handlers(bot):
                     if not info:
                         return None, None
 
-                    title = info.get("title", "video")
+                    original_title = info.get("title", "video")
                     duration = info.get("duration", 0)
-
                     if duration > 600:
                         return "too_long", info
 
                     timestamp = int(time.time())
-                    output_path = os.path.join(config.TEMP_DIR, f"inline_{user_id}_{timestamp}_{title}")
+                    inline_dir = os.path.join(
+                        config.TEMP_DIR,
+                        f"inline_{user_id}_{timestamp}",
+                    )
+                    os.makedirs(inline_dir, exist_ok=True)
+                    output_path = os.path.join(inline_dir, "media")
+                    file_path = None
 
                     ydl_params = {
                         "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
@@ -128,37 +229,19 @@ def register_download_handlers(bot):
                         "nocheckcertificate": True,
                     }
 
-                    if os.path.exists(os.path.abspath("ffmpeg")):
-                        ydl_params["ffmpeg_location"] = os.path.abspath("ffmpeg")
+                    with yt_dlp.YoutubeDL(ydl_params) as ydl:
+                        ydl.download([query_text])
 
-                    download_complete = threading.Event()
-                    download_result = {"file_path": None, "error": None}
-
-                    def download_thread():
-                        try:
-                            with yt_dlp.YoutubeDL(ydl_params) as ydl:
-                                ydl.download([query_text])
-
-                            downloaded_files = list(Path(config.TEMP_DIR).glob(f"inline_{user_id}_{timestamp}_*"))
-                            if downloaded_files:
-                                download_result["file_path"] = str(downloaded_files[0])
-                        except Exception as e:
-                            download_result["error"] = str(e)
-                        finally:
-                            download_complete.set()
-
-                    thread = threading.Thread(target=download_thread)
-                    thread.daemon = True
-                    thread.start()
-
-                    if not download_complete.wait(timeout=15):
-                        return "timeout", info
-
-                    if download_result["error"]:
+                    downloaded_files = [
+                        path
+                        for path in Path(inline_dir).iterdir()
+                        if path.is_file() and path.suffix.lower() not in {".part", ".tmp", ".ytdl"}
+                    ]
+                    if not downloaded_files:
                         return None, None
 
-                    file_path = download_result["file_path"]
-                    if not file_path or not os.path.exists(file_path):
+                    file_path = str(downloaded_files[0])
+                    if not os.path.exists(file_path):
                         return None, None
 
                     file_size = os.path.getsize(file_path)
@@ -167,200 +250,239 @@ def register_download_handlers(bot):
                         return "too_large", info
 
                     try:
-                        from ..utils.message_templates import MessageTemplate
-                        with open(file_path, 'rb') as f:
-
-                            caption = MessageTemplate.format_inline_caption(title, query_text)
-                            message = bot.send_video(
+                        with open(file_path, "rb") as video_file:
+                            caption = MessageTemplate.format_inline_caption(original_title, query_text)
+                            message = sync_bot.send_video(
                                 user_id,
-                                f,
+                                video_file,
                                 caption=caption,
-                                parse_mode='HTML',
+                                parse_mode="HTML",
                                 supports_streaming=True,
-                                timeout=60
+                                timeout=60,
                             )
-                            file_id = message.video.file_id
+                        file_id = message.video.file_id
 
-                            try:
-                                bot.delete_message(user_id, message.message_id)
-                            except:
-                                pass
+                        try:
+                            sync_bot.delete_message(user_id, message.message_id)
+                        except Exception:
+                            logger.debug("Не удалось удалить временное inline-сообщение")
 
                         os.remove(file_path)
+                        try:
+                            os.rmdir(inline_dir)
+                        except OSError:
+                            pass
 
-                        result_id = f'video_{uuid4().hex[:8]}'
+                        result_id = f"video_{uuid4().hex[:8]}"
                         with inline_cache_lock:
-                            inline_queries[result_id] = InlineQuery(
-                                query_id=query_id,
+                            inline_queries[result_id] = InlineQueryCacheItem(
+                                query_id=inline_query.id,
                                 url=query_text,
                                 user_id=user_id,
                                 result_id=result_id,
                                 info=info,
                                 file_id=file_id,
                                 timestamp=time.time(),
-                                status="ready"
+                                status="ready",
                             )
 
                         return file_id, info
-
-                    except Exception as e:
-                        logger.error(f"Ошибка при загрузке: {e}")
-                        if os.path.exists(file_path):
+                    except Exception as exc:
+                        logger.error("Ошибка при inline-загрузке: %s", exc)
+                        if file_path and os.path.exists(file_path):
                             os.remove(file_path)
+                        try:
+                            if os.path.isdir(inline_dir):
+                                for leftover in Path(inline_dir).iterdir():
+                                    if leftover.is_file():
+                                        leftover.unlink(missing_ok=True)
+                                os.rmdir(inline_dir)
+                        except Exception:
+                            logger.debug("Не удалось очистить inline-директорию %s", inline_dir)
                         return None, None
 
-                except Exception as e:
-                    logger.error(f"Ошибка quick_download: {e}")
+                except Exception as exc:
+                    logger.error("Ошибка quick_download: %s", exc)
+                    try:
+                        if "inline_dir" in locals() and os.path.isdir(inline_dir):
+                            for leftover in Path(inline_dir).iterdir():
+                                if leftover.is_file():
+                                    leftover.unlink(missing_ok=True)
+                            os.rmdir(inline_dir)
+                    except Exception:
+                        logger.debug("Не удалось очистить inline-директорию %s", locals().get("inline_dir"))
                     return None, None
 
-            file_id, info = quick_download()
+            try:
+                file_id, info = await asyncio.wait_for(
+                    asyncio.to_thread(quick_download),
+                    timeout=15,
+                )
+            except asyncio.TimeoutError:
+                file_id, info = "timeout", None
 
-            if file_id and file_id not in ["timeout", "too_long", "too_large"]:
-                from ..utils.message_templates import MessageTemplate
-                title = info.get("title", "Video")
+            if file_id and file_id not in {"timeout", "too_long", "too_large"}:
+                title = info.get("title", "Видео")
                 caption = MessageTemplate.format_inline_caption(title, query_text)
-                result = types.InlineQueryResultCachedVideo(
-                    id=f'video_{uuid4().hex[:8]}',
+                result = InlineQueryResultCachedVideo(
+                    id=f"video_{uuid4().hex[:8]}",
                     video_file_id=file_id,
                     title=title,
-                    description='720p Ready to send',
+                    description="720p Ready to send",
                     caption=caption,
-                    parse_mode='HTML'
+                    parse_mode="HTML",
                 )
-                bot.answer_inline_query(
-                    query_id,
-                    [result],
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
                     cache_time=300,
-                    is_personal=True
+                    is_personal=True,
                 )
-            elif file_id == "timeout":
-                title = info.get("title", "Video") if info else "Video"
-                result = types.InlineQueryResultArticle(
-                    id=f'pending_{uuid4().hex[:8]}',
-                    title='Loading...',
-                    description=f'{title} - click to open bot',
-                    input_message_content=types.InputTextMessageContent(
-                        f'Video "{title}" is loading.\n\n'
-                        f'Open @ReSafeBot and send: {query_text}\n\n'
-                        f'@ReSafeBot'
+                return
+
+            open_bot_button = InlineQueryResultsButton(
+                text="Open ReSave",
+                start_parameter="start",
+            )
+
+            if file_id == "timeout":
+                title = info.get("title", "Видео") if info else "Видео"
+                result = InlineQueryResultArticle(
+                    id=f"pending_{uuid4().hex[:8]}",
+                    title="Loading...",
+                    description=f"{title} - click to open bot",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            f'Видео "{title}" еще загружается.\n\n'
+                            f"Откройте @ReSafeBot и отправьте ссылку:\n{query_text}"
+                        )
                     ),
-                    thumbnail_url='https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg'
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                bot.answer_inline_query(
-                    query_id,
-                    [result],
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
                     cache_time=1,
                     is_personal=True,
-                    switch_pm_text="Open ReSave",
-                    switch_pm_parameter="start"
+                    button=open_bot_button,
                 )
-            else:
-                result = types.InlineQueryResultArticle(
-                    id=f'error_{uuid4().hex[:8]}',
-                    title='Error loading',
-                    description='Check link or use bot directly',
-                    input_message_content=types.InputTextMessageContent(
-                        f'Failed to load video.\n\n'
-                        f'Try sending link to @ReSafeBot:\n{query_text}\n\n'
-                        f'@ReSafeBot'
-                    ),
-                    thumbnail_url='https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg'
-                )
-                bot.answer_inline_query(
-                    query_id,
-                    [result],
-                    cache_time=1,
-                    is_personal=True,
-                    switch_pm_text="Open ReSave",
-                    switch_pm_parameter="start"
-                )
+                return
 
-        except Exception as e:
-            logger.exception(f"Critical inline error: {e}")
-            bot.answer_inline_query(inline_query.id, [], cache_time=1)
+            result = InlineQueryResultArticle(
+                id=f"error_{uuid4().hex[:8]}",
+                title="Error loading",
+                description="Check link or use bot directly",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        "Не удалось загрузить видео.\n\n"
+                        f"Попробуйте отправить ссылку в @ReSafeBot:\n{query_text}"
+                    )
+                ),
+                thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+            )
+            await bot.answer_inline_query(
+                inline_query_id=inline_query.id,
+                results=[result],
+                cache_time=1,
+                is_personal=True,
+                button=open_bot_button,
+            )
+        except Exception as exc:
+            logger.exception("Critical inline error: %s", exc)
+            await bot.answer_inline_query(
+                inline_query_id=inline_query.id,
+                results=[],
+                cache_time=1,
+                is_personal=True,
+            )
 
-    @bot.message_handler(func=lambda message: message.text and not message.text.strip().startswith('/'))
-    def handle_url(message):
+    async def handle_url(message: Message):
         from ..utils.url_validator import get_url_validator
-        from ..utils.ui_manager import get_ui_manager
-        from ..utils.error_handler import get_error_handler
 
-        url_validator = get_url_validator()
-        ui_manager = get_ui_manager()
-        error_handler = get_error_handler()
+        if not message.text:
+            return
 
         text = message.text.strip()
+        if text.startswith("/"):
+            return
 
-
+        url_validator = get_url_validator()
         is_valid, corrected_url, metadata = url_validator.validate(text)
-
         if not is_valid:
-            if message.chat.type == 'private':
-
+            if message.chat.type == "private":
                 suggestions = url_validator.suggest_fixes(text)
-
                 if suggestions:
-                    suggestion_text = "Может быть, вы имели в виду?\n\n"
+                    suggestion_lines = ["Может быть, вы имели в виду?", ""]
                     for suggestion in suggestions:
-                        suggestion_text += f"• {suggestion['reason']}\n  {suggestion['url']}\n\n"
-                    bot.reply_to(message,
-                        f"❌ Это не похоже на ссылку\n\n{suggestion_text}"
-                        f"Пожалуйста, отправьте корректную ссылку или выберите вариант выше.")
+                        suggestion_lines.append(f"• {suggestion['reason']}")
+                        suggestion_lines.append(suggestion["url"])
+                        suggestion_lines.append("")
+                    await message.reply(
+                        "❌ Это не похоже на ссылку\n\n" + "\n".join(suggestion_lines).strip()
+                    )
                 else:
-                    bot.reply_to(message,
-                        "❌ Не удаётся распознать ссылку\n\n"
-                        "Убедитесь, что:\n"
-                        "• Ссылка полная (начинается с http:// или https://)\n"
-                        "• Видеоплатформа поддерживается\n"
-                        "• Нет лишних пробелов")
+                    await message.reply(
+                        "❌ Не удается распознать ссылку\n\n"
+                        "Убедитесь, что ссылка полная, начинается с http:// или https:// "
+                        "и не содержит лишних пробелов."
+                    )
             return
 
         url = corrected_url or text
 
-
-        if metadata.get("fixed"):
-            logger.info(f"Ссылка исправлена: {metadata.get('fix_type')}")
-            status_msg = bot.reply_to(message,
-                f"✅ Ссылка исправлена (добавлен https://)\n\n"
-                f"🔍 Ищу информацию о видео... Подождите секунду! ⏳")
-
-
-        if message.chat.type in ['group', 'supergroup']:
-            logger.info(f"Получена ссылка в группе {message.chat.id}: {url}")
-            thread = threading.Thread(target=handle_group_download, args=(url, message, bot))
-            thread.start()
+        if message.chat.type in {"group", "supergroup"}:
+            logger.info("Получена ссылка в группе %s: %s", message.chat.id, url)
+            asyncio.create_task(
+                asyncio.to_thread(
+                    handle_group_download,
+                    url,
+                    message.chat.id,
+                    message.message_id,
+                )
+            )
             return
 
-
         if metadata.get("fixed"):
-            pass
+            logger.info("Ссылка исправлена: %s", metadata.get("fix_type"))
+            status_message = await message.reply(
+                "✅ Ссылка исправлена\n\n"
+                "🔍 Ищу информацию о видео... Подождите секунду."
+            )
         else:
-            status_msg = bot.reply_to(message, "🔍 Ищу информацию о видео... Подождите секунду! ⏳")
+            status_message = await message.reply(
+                "🔍 Ищу информацию о видео... Подождите секунду."
+            )
 
-        thread = threading.Thread(
-            target=extract_video_info,
-            args=(bot, message, url, status_msg, video_info_cache)
+        asyncio.create_task(
+            asyncio.to_thread(
+                extract_video_info,
+                sync_bot,
+                message.chat.id,
+                message.message_id,
+                url,
+                status_message.message_id,
+                video_info_cache,
+            )
         )
-        thread.start()
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('dl_'))
-    def handle_download(call):
-        parts = call.data.split('_')
-        action = parts[1]
-        msg_id = int(parts[-1])
-
-        if msg_id not in video_info_cache:
-            bot.answer_callback_query(call.id, "❌ Информация устарела. Отправьте ссылку заново! 🔄")
+    async def handle_download(call: CallbackQuery):
+        if not call.data or not call.message:
             return
 
-        download_info = video_info_cache[msg_id]
-        bot.answer_callback_query(call.id, "✅ Начинаю скачивание! Подождите... ⏳")
-        bot.edit_message_text("📥 Добавляю в очередь...", call.message.chat.id, call.message.message_id)
+        parts = call.data.split("_")
+        action = parts[1]
+        original_message_id = int(parts[-1])
+
+        if original_message_id not in video_info_cache:
+            await call.answer("❌ Информация устарела. Отправьте ссылку заново.")
+            return
+
+        download_info = video_info_cache[original_message_id]
+        await call.answer("✅ Начинаю скачивание.")
+        await call.message.edit_text("📥 Добавляю в очередь...")
 
         format_param = f"best[height<={int(parts[2])}]" if action == "res" else None
-
-
-        url = download_info['url']
+        url = download_info["url"]
         action_type = action
 
         if "tiktok.com" in url and "/photo/" in url:
@@ -370,21 +492,25 @@ def register_download_handlers(bot):
             url=url,
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            info=download_info['info'],
+            info=download_info["info"],
             action=action_type,
-            format_param=format_param
+            format_param=format_param,
         )
-        if msg_id in video_info_cache:
-            del video_info_cache[msg_id]
+        video_info_cache.pop(original_message_id, None)
 
-    @bot.callback_query_handler(func=lambda call: call.data == "cancel_all_downloads")
-    def handle_cancel_all_downloads(call):
+    async def handle_cancel_all_downloads(call: CallbackQuery):
+        if not call.message:
+            return
+
         with _download_manager.lock:
-            user_tasks = {k: v for k, v in _download_manager.tasks.items()
-                         if v.chat_id == call.message.chat.id and v.status in ["downloading", "pending"]}
+            user_tasks = {
+                task_id: task
+                for task_id, task in _download_manager.tasks.items()
+                if task.chat_id == call.message.chat.id and task.status in {"downloading", "pending"}
+            }
 
         if not user_tasks:
-            bot.answer_callback_query(call.id, "😌 Нет активных загрузок для отмены.")
+            await call.answer("Нет активных загрузок для отмены.")
             return
 
         cancelled_count = 0
@@ -392,24 +518,41 @@ def register_download_handlers(bot):
             if _download_manager.cancel_task(task_id):
                 cancelled_count += 1
 
-        bot.answer_callback_query(call.id, f"✅ Отменено {cancelled_count} загрузок!")
-        bot.edit_message_text(
-            f"✅ Отменено {cancelled_count} загрузок! Готов к новым задачам. 🚀",
-            call.message.chat.id,
-            call.message.message_id
+        await call.answer(f"Отменено {cancelled_count} загрузок.")
+        await call.message.edit_text(
+            f"✅ Отменено {cancelled_count} загрузок. Готов к новым задачам."
         )
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('cancel_'))
-    def handle_cancel(call):
-        bot.answer_callback_query(call.id, "✅ Запрос отменён! 😊")
+    async def handle_cancel(call: CallbackQuery):
+        if not call.message:
+            return
+
+        await call.answer("Запрос отменен.")
         try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
-        except:
-            bot.edit_message_text("❌ Запрос отменён.", call.message.chat.id, call.message.message_id)
+            await call.message.delete()
+        except Exception:
+            await call.message.edit_text("❌ Запрос отменен.")
+
+    router.inline_query.register(inline_query_handler)
+    router.message.register(
+        handle_url,
+        lambda message: bool(message.text and not message.text.strip().startswith("/")),
+    )
+    router.callback_query.register(
+        handle_download,
+        lambda call: bool(call.data and call.data.startswith("dl_")),
+    )
+    router.callback_query.register(
+        handle_cancel_all_downloads,
+        lambda call: call.data == "cancel_all_downloads",
+    )
+    router.callback_query.register(
+        handle_cancel,
+        lambda call: bool(call.data and call.data.startswith("cancel_")),
+    )
 
 
-def handle_group_download(url, message, bot):
-    """Обрабатывает ссылку из группы"""
+def handle_group_download(url: str, chat_id: int, message_id: int):
     try:
         import yt_dlp
 
@@ -421,144 +564,115 @@ def handle_group_download(url, message, bot):
             "cookiefile": os.path.abspath("cookies.txt"),
             "nocheckcertificate": True,
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if not info:
-            logger.warning(f"Не удалось получить информацию для {url} в группе {message.chat.id}")
+            logger.warning("Не удалось получить информацию для %s в группе %s", url, chat_id)
             return
 
-        logger.info(f"Начинаю автоматическую загрузку для {url} в группе {message.chat.id}")
         _download_manager.add_task(
             url=url,
-            chat_id=message.chat.id,
-            message_id=message.message_id,
+            chat_id=chat_id,
+            message_id=message_id,
             info=info,
             action="medium",
-            reply_to_id=message.message_id,
-            silent_mode=True
-        ) 
+            reply_to_id=message_id,
+            silent_mode=True,
+        )
+    except Exception as exc:
+        logger.error("Ошибка при обработке ссылки из группы %s: %s", chat_id, exc)
 
-    except Exception as e:
-        logger.error(f"Ошибка при автоматической обработке ссылки из группы {message.chat.id}: {e}")
 
-
-def extract_video_info(bot, message, url, status_msg, cache):
-    """Получение информации о видео"""
+def extract_video_info(
+    bot,
+    chat_id: int,
+    user_message_id: int,
+    url: str,
+    status_message_id: int,
+    cache: dict[int, dict],
+):
     try:
         from ..core.video_info import fetch_video_info
-        from ..utils.file_utils import sanitize_filename
-        from ..core.tiktok_photo_handler import TikTokPhotoHandler
-
 
         if "tiktok.com" in url and "/photo/" in url:
-            logger.info(f"Обнаружено TikTok фото, скачиваю сразу...")
-
             bot.edit_message_text(
-                "🖼️ Обнаружено TikTok фото! Начинаю скачивание... ⏳",
-                message.chat.id,
-                status_msg.message_id
+                "🖼️ Обнаружено TikTok фото. Начинаю скачивание...",
+                chat_id,
+                status_message_id,
             )
-
-
             _download_manager.add_task(
                 url=url,
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
-                info={'title': 'TikTok Photo'},
-                action='tiktok_photo',
-                reply_to_id=message.message_id,
-                silent_mode=False
+                chat_id=chat_id,
+                message_id=status_message_id,
+                info={"title": "TikTok Photo"},
+                action="tiktok_photo",
+                reply_to_id=user_message_id,
+                silent_mode=False,
             )
             return
 
         info = fetch_video_info(url)
         if not info:
-            bot.edit_message_text("❌ Не удалось получить информацию о видео.", message.chat.id, status_msg.message_id)
+            bot.edit_message_text(
+                "❌ Не удалось получить информацию о видео.",
+                chat_id,
+                status_message_id,
+            )
             return
 
-        if info.get('_type') == 'playlist':
-
-            bot.edit_message_text("🎶 Плейлисты находятся в разработке.", message.chat.id, status_msg.message_id)
+        if info.get("_type") == "playlist":
+            bot.edit_message_text(
+                "🎶 Поддержка плейлистов пока не реализована.",
+                chat_id,
+                status_message_id,
+            )
             return
 
-        formats = info.get("formats", [])
-        title = info.get("title", "video")
-        duration = info.get("duration")
-        subtitles = info.get('subtitles', {})
-        auto_captions = info.get('automatic_captions', {})
-        has_subtitles = bool(subtitles or auto_captions)
+        resolutions: dict[int, dict] = {}
+        for item in info.get("formats", []):
+            height = item.get("height")
+            if height and item.get("vcodec", "none") != "none":
+                existing = resolutions.get(height)
+                if existing is None or (item.get("filesize") or 0) > (existing.get("filesize") or 0):
+                    resolutions[height] = item
 
-        resolutions = {}
-        for f in formats:
-            height = f.get("height")
-            if height and f.get("vcodec", "none") != "none":
-                if height not in resolutions or (f.get("filesize") or 0) > (resolutions[height].get('filesize') or 0):
-                    resolutions[height] = f
-
-        cache[message.message_id] = {
-            'url': url,
-            'info': info,
-            'resolutions': resolutions,
-            'chat_id': message.chat.id,
-            'has_subtitles': has_subtitles
+        cache[user_message_id] = {
+            "url": url,
+            "info": info,
+            "resolutions": resolutions,
+            "chat_id": chat_id,
         }
 
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(types.InlineKeyboardButton("🎬 Лучшее качество (авто)", callback_data=f"dl_best_{message.message_id}"))
-        markup.add(types.InlineKeyboardButton("📹 Среднее качество (720p)", callback_data=f"dl_medium_{message.message_id}"))
-        markup.add(types.InlineKeyboardButton("📱 Низкое качество (480p)", callback_data=f"dl_low_{message.message_id}"))
-        markup.add(types.InlineKeyboardButton("🎵 Только аудио (MP3)", callback_data=f"dl_audio_{message.message_id}"))
+        markup = _build_download_markup(user_message_id, info, resolutions)
 
-        if duration and duration <= 30:
-            markup.add(types.InlineKeyboardButton("✨ Создать GIF", callback_data=f"dl_gif_{message.message_id}"))
+        lines = [f"📹 {info.get('title', 'video')}"]
 
+        if info.get("uploader"):
+            lines.append(f"👤 {info['uploader']}")
 
-        if has_subtitles:
-            markup.add(types.InlineKeyboardButton("📝 Скачать субтитры (.srt)", callback_data=f"dl_subtitles_{message.message_id}"))
+        if info.get("duration"):
+            minutes, seconds = divmod(int(info["duration"]), 60)
+            lines.append(f"⏱️ {minutes:02d}:{seconds:02d}")
 
-        if info.get("thumbnail"):
-            markup.add(types.InlineKeyboardButton("🖼️ Скачать превью (без сжатия)", callback_data=f"dl_thumbnail_{message.message_id}"))
-
-        sorted_resolutions = sorted(resolutions.keys(), reverse=True)
-        resolution_buttons = []
-        for height in sorted_resolutions[:3]:
-            fmt_info = resolutions[height]
-            size_mb_str = f" (~{fmt_info.get('filesize', 0) / (1024*1024):.1f}MB)" if fmt_info.get('filesize') else ""
-            resolution_buttons.append(types.InlineKeyboardButton(f"🎥 {height}p{size_mb_str}", callback_data=f"dl_res_{height}_{message.message_id}"))
-
-        if resolution_buttons:
-            markup.row(*resolution_buttons)
-        markup.add(types.InlineKeyboardButton("❌ Отмена", callback_data=f"cancel_{message.message_id}"))
-
-
-        message_text = f"📹 {title} ✨\n\n"
-
-        if info.get('uploader'):
-            message_text += f"👤 {info.get('uploader', '')}\n"
-
-        if duration:
-            minutes, seconds = divmod(int(duration), 60)
-            message_text += f"⏱️ {minutes:02d}:{seconds:02d}\n"
-
-        message_text += "\nВыберите качество для скачивания: 🎛️\n"
-
+        lines.extend(["", "Выберите качество для скачивания:"])
 
         get_safe_formatter().safe_edit_message_text(
             bot,
-            message_text,
-            message.chat.id,
-            status_msg.message_id,
-            reply_markup=markup
+            "\n".join(lines),
+            chat_id,
+            status_message_id,
+            reply_markup=markup,
         )
-
-    except Exception as e:
-        error_msg = str(e)
-        if "This video is unavailable" in error_msg:
-            error_text = "❌ Это видео недоступно."
-        elif "Private video" in error_msg:
-            error_text = "❌ Это приватное видео."
+    except Exception as exc:
+        error_message = str(exc)
+        if "This video is unavailable" in error_message:
+            user_text = "❌ Это видео недоступно."
+        elif "Private video" in error_message:
+            user_text = "❌ Это приватное видео."
         else:
-            error_text = f"❌ Ошибка: {error_msg}"
-        bot.edit_message_text(error_text, message.chat.id, status_msg.message_id)
-        logger.error(f"Ошибка при получении информации о видео {url}: {e}")
+            user_text = f"❌ Ошибка: {error_message}"
+
+        bot.edit_message_text(user_text, chat_id, status_message_id)
+        logger.error("Ошибка при получении информации о видео %s: %s", url, exc)

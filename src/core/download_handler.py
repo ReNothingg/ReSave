@@ -8,7 +8,7 @@ from pathlib import Path
 import yt_dlp
 import requests
 from PIL import Image
-from telebot import types
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 
 from ..utils.file_utils import sanitize_filename
 from ..utils.admin_notifier import notify_admins
@@ -19,6 +19,34 @@ import config
 logger = logging.getLogger(__name__)
 
 cookie_path = os.path.abspath("cookies.txt")
+
+
+def _ensure_task_work_dir(task, temp_dir: str) -> Path:
+    if task.work_dir:
+        work_dir = Path(task.work_dir)
+    else:
+        work_dir = Path(temp_dir) / f"task_{task.task_id}"
+        task.work_dir = str(work_dir)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return work_dir
+
+
+def _find_completed_files(work_dir: Path) -> list[Path]:
+    ignored_suffixes = {".part", ".tmp", ".ytdl"}
+    return [
+        path
+        for path in work_dir.iterdir()
+        if path.is_file() and path.suffix.lower() not in ignored_suffixes
+    ]
+
+
+def _describe_work_dir(work_dir: Path) -> str:
+    if not work_dir.exists():
+        return "<missing>"
+
+    items = sorted(path.name for path in work_dir.iterdir())
+    return ", ".join(items) if items else "<empty>"
 
 
 class ProgressHook:
@@ -128,12 +156,17 @@ def handle_download_task(task, bot, temp_dir):
                 os.remove(task.file_path)
             except:
                 pass
+        if task.work_dir and os.path.exists(task.work_dir):
+            try:
+                shutil.rmtree(task.work_dir, ignore_errors=True)
+            except Exception as cleanup_error:
+                logger.debug(f"Не удалось очистить рабочую директорию {task.work_dir}: {cleanup_error}")
 
 
 def _download_and_send_video(task, bot, temp_dir):
     title = sanitize_filename(task.info.get("title") or task.info.get("id") or "video")
-    timestamp = int(time.time())
-    output_path = os.path.join(temp_dir, f"{task.chat_id}_{timestamp}_{title}")
+    work_dir = _ensure_task_work_dir(task, temp_dir)
+    output_path = str(work_dir / "media")
 
     fmt, post, output_template = _get_format_options(task, output_path)
 
@@ -169,12 +202,15 @@ def _download_and_send_video(task, bot, temp_dir):
     with yt_dlp.YoutubeDL(ydl_params) as ydl:
         ydl.download([task.url])
 
-    downloaded_files = list(Path(temp_dir).glob(f"{task.chat_id}_{timestamp}_{title}*"))
-    downloaded_files = [
-        p for p in downloaded_files
-        if p.is_file() and p.suffix.lower() not in [".part", ".tmp"]
-    ]
+    downloaded_files = _find_completed_files(work_dir)
     if not downloaded_files:
+        logger.error(
+            "Файл не найден после скачивания. task_id=%s, action=%s, work_dir=%s, contents=%s",
+            task.task_id,
+            task.action,
+            work_dir,
+            _describe_work_dir(work_dir),
+        )
         raise FileNotFoundError("Файл не найден после скачивания")
 
     file_path = max(downloaded_files, key=lambda p: p.stat().st_mtime)
@@ -299,12 +335,9 @@ def _download_and_send_subtitles(task, bot, temp_dir):
         if not task.silent_mode:
             bot.edit_message_text("📝 Ищу и скачиваю субтитры...", task.chat_id, task.message_id)
 
-
-        sanitized_title = sanitize_filename(task.info.get("title") or "video")
-
         original_title = task.info.get("title") or "video"
-        timestamp = int(time.time())
-        output_template = os.path.join(temp_dir, f"{task.chat_id}_{timestamp}_{sanitized_title}.%(ext)s")
+        work_dir = _ensure_task_work_dir(task, temp_dir)
+        output_template = str(work_dir / "subtitle.%(ext)s")
 
 
         subtitles = task.info.get('subtitles', {})
@@ -410,10 +443,15 @@ def _download_and_send_subtitles(task, bot, temp_dir):
             task.error = "Не удалось скачать субтитры"
             return
 
-        subtitle_files = list(Path(temp_dir).glob(f"{task.chat_id}_{timestamp}_{sanitized_title}*.srt"))
+        subtitle_files = sorted(work_dir.glob("*.srt"))
         if not subtitle_files:
             error_msg = "❌ Субтитры не были сохранены. Возможно, сервер их удалил."
-            logger.error("Субтитры не найдены после скачивания.")
+            logger.error(
+                "Субтитры не найдены после скачивания. task_id=%s, work_dir=%s, contents=%s",
+                task.task_id,
+                work_dir,
+                _describe_work_dir(work_dir),
+            )
             if not task.silent_mode:
                 try:
                     bot.edit_message_text(error_msg, task.chat_id, task.message_id)
@@ -457,7 +495,8 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
     downloaded_files = []
 
     try:
-        handler = TikTokPhotoHandler(temp_dir)
+        work_dir = _ensure_task_work_dir(task, temp_dir)
+        handler = TikTokPhotoHandler(str(work_dir))
 
         if not task.silent_mode:
             bot.edit_message_text(
@@ -468,7 +507,7 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
 
         logger.info(f"Начинаю скачивание TikTok фото: {task.url}")
 
-        downloaded_files = handler.download_photos(task.url, temp_dir)
+        downloaded_files = handler.download_photos(task.url, str(work_dir))
 
         if not downloaded_files:
             raise RuntimeError("Не удалось скачать ни одного фото из TikTok")
@@ -517,15 +556,19 @@ def _download_and_send_tiktok_photos(task, bot, temp_dir):
             media_group = []
             for idx, file_path in enumerate(downloaded_files):
                 with open(file_path, 'rb') as f:
+                    photo_input = BufferedInputFile(
+                        f.read(),
+                        filename=os.path.basename(file_path),
+                    )
                     if idx == 0:
                         caption = MessageTemplate.format_tiktok_photo_caption(task.url, len(downloaded_files))
-                        media = types.InputMediaPhoto(
-                            media=f.read(),
+                        media = InputMediaPhoto(
+                            media=photo_input,
                             caption=caption,
                             parse_mode='HTML'
                         )
                     else:
-                        media = types.InputMediaPhoto(media=f.read())
+                        media = InputMediaPhoto(media=photo_input)
                     media_group.append(media)
 
             try:
@@ -604,6 +647,7 @@ def _format_file_size(size_bytes: int) -> str:
 
 def _download_and_send_thumbnail(task, bot, temp_dir):
     try:
+        work_dir = _ensure_task_work_dir(task, temp_dir)
         thumbnail_url = task.info.get("thumbnail")
         if not thumbnail_url:
             raise ValueError("Превью для этого видео недоступно")
@@ -648,9 +692,8 @@ def _download_and_send_thumbnail(task, bot, temp_dir):
             ext = 'jpg'
 
         title = sanitize_filename(task.info.get("title") or "thumbnail")
-        timestamp = int(time.time())
         file_name = f"{title}_thumbnail.{ext}"
-        file_path = os.path.join(temp_dir, f"{task.chat_id}_{timestamp}_{file_name}")
+        file_path = str(work_dir / file_name)
 
         with open(file_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):

@@ -1,5 +1,5 @@
 import logging
-from functools import wraps
+
 from .markdown_escape import escape_markdown
 
 logger = logging.getLogger(__name__)
@@ -23,112 +23,89 @@ class TelegramBotWrapper:
         self.bot.send_photo = self._wrapped_send_photo
         self.bot.send_video = self._wrapped_send_video
 
-    def _handle_parse_error(self, error, text, parse_mode):
-        error_msg = str(error)
-
-        if "Can't parse entities" in error_msg or "parse_mode" in error_msg.lower():
-            logger.warning(f"Ошибка парсинга Markdown обнаружена: {error_msg[:100]}")
-            logger.debug(f"Проблемный текст: {text[:200]}")
-
-            escaped = escape_markdown(text, safe=True)
-            return True, escaped
+    @staticmethod
+    def _handle_parse_error(error, text):
+        error_message = str(error).lower()
+        if "can't parse entities" in error_message or "parse entities" in error_message:
+            logger.warning("Telegram parse error detected, retrying without parse_mode")
+            return True, escape_markdown(text, safe=True)
 
         return False, text
 
     def _wrapped_send_message(self, chat_id, text, **kwargs):
         try:
             return self._original_send_message(chat_id, text, **kwargs)
-        except Exception as e:
-            is_parse_error, escaped_text = self._handle_parse_error(e, text, kwargs.get('parse_mode'))
+        except Exception as exc:
+            is_parse_error, escaped_text = self._handle_parse_error(exc, text)
+            if not is_parse_error:
+                raise
 
-            if is_parse_error:
-                kwargs_copy = kwargs.copy()
-                kwargs_copy.pop('parse_mode', None)
-                try:
-                    return self._original_send_message(chat_id, escaped_text, **kwargs_copy)
-                except Exception as e2:
-                    logger.error(f"Ошибка отправки даже после экранирования: {e2}")
-                    raise e2
-
-            raise e
+            retry_kwargs = kwargs.copy()
+            retry_kwargs.pop("parse_mode", None)
+            return self._original_send_message(chat_id, escaped_text, **retry_kwargs)
 
     def _wrapped_edit_message_text(self, text, chat_id, message_id, **kwargs):
         try:
             return self._original_edit_message_text(text, chat_id, message_id, **kwargs)
-        except Exception as e:
-            is_parse_error, escaped_text = self._handle_parse_error(e, text, kwargs.get('parse_mode'))
+        except Exception as exc:
+            is_parse_error, escaped_text = self._handle_parse_error(exc, text)
+            if not is_parse_error:
+                raise
 
-            if is_parse_error:
-                kwargs_copy = kwargs.copy()
-                kwargs_copy.pop('parse_mode', None)
-                try:
-                    return self._original_edit_message_text(escaped_text, chat_id, message_id, **kwargs_copy)
-                except Exception as e2:
-                    logger.error(f"Ошибка редактирования даже после экранирования: {e2}")
-                    raise e2
-
-            raise e
+            retry_kwargs = kwargs.copy()
+            retry_kwargs.pop("parse_mode", None)
+            return self._original_edit_message_text(
+                escaped_text,
+                chat_id,
+                message_id,
+                **retry_kwargs,
+            )
 
     def _wrapped_reply_to(self, message, text, **kwargs):
         try:
             return self._original_reply_to(message, text, **kwargs)
-        except Exception as e:
-            is_parse_error, escaped_text = self._handle_parse_error(e, text, kwargs.get('parse_mode'))
+        except Exception as exc:
+            is_parse_error, escaped_text = self._handle_parse_error(exc, text)
+            if not is_parse_error:
+                raise
 
-            if is_parse_error:
-                kwargs_copy = kwargs.copy()
-                kwargs_copy.pop('parse_mode', None)
-                try:
-                    return self._original_reply_to(message, escaped_text, **kwargs_copy)
-                except Exception as e2:
-                    logger.error(f"Ошибка ответа даже после экранирования: {e2}")
-                    raise e2
-
-            raise e
+            retry_kwargs = kwargs.copy()
+            retry_kwargs.pop("parse_mode", None)
+            return self._original_reply_to(message, escaped_text, **retry_kwargs)
 
     def _wrapped_send_photo(self, chat_id, photo, **kwargs):
         try:
             return self._original_send_photo(chat_id, photo, **kwargs)
-        except Exception as e:
-            caption = kwargs.get('caption')
-            if caption:
-                is_parse_error, escaped_caption = self._handle_parse_error(
-                    e, caption, kwargs.get('parse_mode')
-                )
+        except Exception as exc:
+            caption = kwargs.get("caption")
+            if not caption:
+                raise
 
-                if is_parse_error:
-                    kwargs_copy = kwargs.copy()
-                    kwargs_copy['caption'] = escaped_caption
-                    kwargs_copy.pop('parse_mode', None)
-                    try:
-                        return self._original_send_photo(chat_id, photo, **kwargs_copy)
-                    except Exception as e2:
-                        logger.error(f"Ошибка отправки фото даже после экранирования: {e2}")
-                        raise e2
+            is_parse_error, escaped_caption = self._handle_parse_error(exc, caption)
+            if not is_parse_error:
+                raise
 
-            raise e
+            retry_kwargs = kwargs.copy()
+            retry_kwargs["caption"] = escaped_caption
+            retry_kwargs.pop("parse_mode", None)
+            return self._original_send_photo(chat_id, photo, **retry_kwargs)
 
     def _wrapped_send_video(self, chat_id, video, **kwargs):
         try:
             return self._original_send_video(chat_id, video, **kwargs)
-        except Exception as e:
-            caption = kwargs.get('caption')
-            if caption:
-                is_parse_error, escaped_caption = self._handle_parse_error(
-                    e, caption, kwargs.get('parse_mode')
-                )
+        except Exception as exc:
+            caption = kwargs.get("caption")
+            if not caption:
+                raise
 
-                if is_parse_error:
-                    kwargs_copy = kwargs.copy()
-                    kwargs_copy['caption'] = escaped_caption
-                    kwargs_copy.pop('parse_mode', None)
-                    try:
-                        return self._original_send_video(chat_id, video, **kwargs_copy)
-                    except Exception as e2:
-                        logger.error(f"Ошибка отправки видео даже после экранирования: {e2}")
-                        raise e2
+            is_parse_error, escaped_caption = self._handle_parse_error(exc, caption)
+            if not is_parse_error:
+                raise
 
-            raise e
+            retry_kwargs = kwargs.copy()
+            retry_kwargs["caption"] = escaped_caption
+            retry_kwargs.pop("parse_mode", None)
+            return self._original_send_video(chat_id, video, **retry_kwargs)
 
     def __getattr__(self, name):
         return getattr(self.bot, name)

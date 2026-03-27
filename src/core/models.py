@@ -20,6 +20,7 @@ class DownloadTask:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    work_dir: Optional[str] = None
     cancel_event: Optional[threading.Event] = None
     is_inline: bool = False
     inline_query_id: Optional[str] = None

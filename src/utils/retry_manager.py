@@ -123,6 +123,10 @@ class RetryManager:
         if attempt_count >= self.config.max_retries:
             return False
 
+        if isinstance(exception, FileNotFoundError):
+            logger.debug("FileNotFoundError не повторяем: %s", exception)
+            return False
+
 
         if not isinstance(exception, self.config.retryable_exceptions):
             return False
@@ -139,6 +143,7 @@ class RetryManager:
             "age-restricted",
             "unavailable",
             "no such file",
+            "файл не найден после скачивания",
             "invalid url",
         ]
 
