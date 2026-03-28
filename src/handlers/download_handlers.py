@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 
 from ..core.models import InlineQuery as InlineQueryCacheItem
-from ..utils.message_templates import MessageTemplate
+from ..utils.message_templates import ErrorMessages, MessageTemplate
 from ..utils.safe_formatter_new import get_safe_formatter
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,14 @@ def set_download_manager(manager):
 
 def get_download_manager():
     return _download_manager
+
+
+def _build_download_limit_text(chat_id: int) -> str:
+    active_downloads = _download_manager.get_user_task_count(chat_id) if _download_manager else 0
+    return (
+        f"{ErrorMessages.CONCURRENT_LIMIT}\n\n"
+        f"Активных загрузок: {active_downloads}/{config.MAX_DOWNLOADS_PER_USER}"
+    )
 
 
 def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, dict]) -> InlineKeyboardMarkup:
@@ -478,6 +486,11 @@ def register_download_handlers(router: Router, sync_bot):
             return
 
         download_info = video_info_cache[original_message_id]
+        if not _download_manager.can_add_task(call.message.chat.id):
+            await call.answer("Лимит активных загрузок достигнут.", show_alert=True)
+            await call.message.edit_text(_build_download_limit_text(call.message.chat.id))
+            return
+
         await call.answer("✅ Начинаю скачивание.")
         await call.message.edit_text("📥 Добавляю в очередь...")
 
@@ -488,14 +501,19 @@ def register_download_handlers(router: Router, sync_bot):
         if "tiktok.com" in url and "/photo/" in url:
             action_type = "tiktok_photo"
 
-        _download_manager.add_task(
-            url=url,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            info=download_info["info"],
-            action=action_type,
-            format_param=format_param,
-        )
+        try:
+            _download_manager.add_task(
+                url=url,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                info=download_info["info"],
+                action=action_type,
+                format_param=format_param,
+            )
+        except ValueError:
+            await call.message.edit_text(_build_download_limit_text(call.message.chat.id))
+            return
+
         video_info_cache.pop(original_message_id, None)
 
     async def handle_cancel_all_downloads(call: CallbackQuery):
@@ -597,20 +615,35 @@ def extract_video_info(
         from ..core.video_info import fetch_video_info
 
         if "tiktok.com" in url and "/photo/" in url:
+            if not _download_manager.can_add_task(chat_id):
+                bot.edit_message_text(
+                    _build_download_limit_text(chat_id),
+                    chat_id,
+                    status_message_id,
+                )
+                return
+
             bot.edit_message_text(
                 "🖼️ Обнаружено TikTok фото. Начинаю скачивание...",
                 chat_id,
                 status_message_id,
             )
-            _download_manager.add_task(
-                url=url,
-                chat_id=chat_id,
-                message_id=status_message_id,
-                info={"title": "TikTok Photo"},
-                action="tiktok_photo",
-                reply_to_id=user_message_id,
-                silent_mode=False,
-            )
+            try:
+                _download_manager.add_task(
+                    url=url,
+                    chat_id=chat_id,
+                    message_id=status_message_id,
+                    info={"title": "TikTok Photo"},
+                    action="tiktok_photo",
+                    reply_to_id=user_message_id,
+                    silent_mode=False,
+                )
+            except ValueError:
+                bot.edit_message_text(
+                    _build_download_limit_text(chat_id),
+                    chat_id,
+                    status_message_id,
+                )
             return
 
         info = fetch_video_info(url)

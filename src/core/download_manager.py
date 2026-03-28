@@ -1,14 +1,16 @@
-import time
-import queue
 import logging
+import queue
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+
 import aiohttp
 
-from .models import DownloadTask
 import config
+from .models import DownloadTask
 
 logger = logging.getLogger(__name__)
+
 
 class DownloadManager:
     def __init__(self, max_concurrent_downloads=3, max_retries=3):
@@ -23,7 +25,6 @@ class DownloadManager:
         self.session = None
         self.bot = None
         self._started = False
-
 
         self.thread_pool = ThreadPoolExecutor(max_workers=max(10, max_concurrent_downloads * 2))
 
@@ -55,9 +56,37 @@ class DownloadManager:
             await self.session.close()
             self.session = None
 
-    def add_task(self, url, chat_id, message_id, info, action, format_param=None,
-                 is_inline=False, inline_query_id=None, inline_result_id=None,
-                 reply_to_id=None, silent_mode=False):
+    def get_user_task_count(self, chat_id):
+        if chat_id <= 0:
+            return 0
+
+        with self.lock:
+            return sum(
+                1
+                for task in self.tasks.values()
+                if task.chat_id == chat_id and task.status in {"pending", "downloading"}
+            )
+
+    def can_add_task(self, chat_id):
+        if chat_id <= 0 or config.MAX_DOWNLOADS_PER_USER <= 0:
+            return True
+
+        return self.get_user_task_count(chat_id) < config.MAX_DOWNLOADS_PER_USER
+
+    def add_task(
+        self,
+        url,
+        chat_id,
+        message_id,
+        info,
+        action,
+        format_param=None,
+        is_inline=False,
+        inline_query_id=None,
+        inline_result_id=None,
+        reply_to_id=None,
+        silent_mode=False,
+    ):
         task = DownloadTask(
             url=url,
             chat_id=chat_id,
@@ -70,10 +99,20 @@ class DownloadManager:
             inline_query_id=inline_query_id,
             inline_result_id=inline_result_id,
             reply_to_id=reply_to_id,
-            silent_mode=silent_mode
+            silent_mode=silent_mode,
         )
 
         with self.lock:
+            if chat_id > 0 and config.MAX_DOWNLOADS_PER_USER > 0:
+                active_tasks = sum(
+                    1
+                    for existing_task in self.tasks.values()
+                    if existing_task.chat_id == chat_id
+                    and existing_task.status in {"pending", "downloading"}
+                )
+                if active_tasks >= config.MAX_DOWNLOADS_PER_USER:
+                    raise ValueError("too many active downloads for user")
+
             self.tasks[task.task_id] = task
             self.task_queue.put(task)
 
@@ -111,10 +150,10 @@ class DownloadManager:
                     task.status = "completed"
                     task.completed_at = time.time()
 
-            except Exception as e:
-                logger.exception(f"Ошибка при выполнении задачи {task.task_id}: {str(e)}")
+            except Exception as exc:
+                logger.exception("Ошибка при выполнении задачи %s: %s", task.task_id, exc)
                 task.status = "failed"
-                task.error = str(e)
+                task.error = str(exc)
 
             finally:
                 with self.lock:
@@ -124,15 +163,21 @@ class DownloadManager:
 
     def _download_and_send_task(self, task):
         from .download_handler import handle_download_task
-        handle_download_task(task, self.bot, config.TEMP_DIR)
 
+        handle_download_task(task, self.bot, config.TEMP_DIR)
 
     def _status_updater(self):
         while True:
             try:
                 with self.lock:
-                    active_tasks = {k: v for k, v in self.tasks.items()
-                                   if v.status == "downloading" and v.progress < 1.0 and not v.is_inline and not v.silent_mode}
+                    active_tasks = {
+                        task_id: task
+                        for task_id, task in self.tasks.items()
+                        if task.status == "downloading"
+                        and task.progress < 1.0
+                        and not task.is_inline
+                        and not task.silent_mode
+                    }
 
                 for task_id, task in active_tasks.items():
                     try:
@@ -154,26 +199,25 @@ class DownloadManager:
                                 f"⏬ Скачивание в процессе: {int(task.progress * 100)}%\n"
                                 f"{progress_bar}{remaining_str}\n\n💬 Скоро будет готово!",
                                 task.chat_id,
-                                task.message_id
+                                task.message_id,
                             )
-                    except Exception as e:
-                        logger.debug(f"Ошибка при обновлении статуса задачи {task_id}: {e}")
+                    except Exception as exc:
+                        logger.debug("Ошибка при обновлении статуса задачи %s: %s", task_id, exc)
 
-            except Exception as e:
-                logger.error(f"Ошибка в потоке обновления статуса: {e}")
+            except Exception as exc:
+                logger.error("Ошибка в потоке обновления статуса: %s", exc)
 
             time.sleep(2)
 
     @staticmethod
     def _generate_progress_bar(progress, length=10):
         filled = int(progress * length)
-        return f"{'▰' * filled}{'▱' * (length - filled)}"
+        return f"{'▓' * filled}{'░' * (length - filled)}"
 
     @staticmethod
     def _format_time(seconds):
         if seconds < 60:
             return f"{seconds:.0f} сек"
-        elif seconds < 3600:
+        if seconds < 3600:
             return f"{seconds / 60:.1f} мин"
-        else:
-            return f"{seconds / 3600:.1f} ч"
+        return f"{seconds / 3600:.1f} ч"

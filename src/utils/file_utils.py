@@ -1,5 +1,6 @@
-import os
 import logging
+import os
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -12,14 +13,20 @@ def sanitize_filename(name):
 
 def cleanup_old_files(temp_dir):
     try:
-        for file in Path(temp_dir).glob("*"):
-            if file.is_file():
-                try:
-                    os.remove(file)
-                except Exception as e:
-                    logger.warning(f"Не удалось удалить файл {file}: {e}")
-    except Exception as e:
-        logger.error(f"Ошибка при очистке временных файлов: {e}")
+        temp_path = Path(temp_dir)
+        if not temp_path.exists():
+            return
+
+        for entry in temp_path.iterdir():
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except Exception as exc:
+                logger.warning("Не удалось очистить %s: %s", entry, exc)
+    except Exception as exc:
+        logger.error("Ошибка при очистке временных файлов: %s", exc)
 
 
 def ensure_temp_dir(temp_dir):

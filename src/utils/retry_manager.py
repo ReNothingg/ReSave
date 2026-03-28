@@ -346,13 +346,19 @@ _smart_retry_manager = None
 
 def get_retry_manager(config: RetryConfig = None) -> RetryManager:
     global _retry_manager
+    if config is not None:
+        return RetryManager(config)
+
     if _retry_manager is None:
-        _retry_manager = RetryManager(config or DOWNLOAD_RETRY_CONFIG)
+        _retry_manager = RetryManager(DOWNLOAD_RETRY_CONFIG)
     return _retry_manager
 
 
 def get_smart_retry_manager(config: RetryConfig = None) -> SmartRetryManager:
     global _smart_retry_manager
+    if config is not None:
+        return SmartRetryManager(config)
+
     if _smart_retry_manager is None:
-        _smart_retry_manager = SmartRetryManager(config or DOWNLOAD_RETRY_CONFIG)
+        _smart_retry_manager = SmartRetryManager(DOWNLOAD_RETRY_CONFIG)
     return _smart_retry_manager
