@@ -169,6 +169,8 @@ def register_command_handlers(router: Router):
             stats_lines.append(f"Всего загрузок: {user_stats.downloads_count}")
             stats_lines.append(f"Видео: {user_stats.total_videos}")
             stats_lines.append(f"Аудио: {user_stats.total_audios}")
+            if user_stats.total_other_downloads:
+                stats_lines.append(f"Прочее: {user_stats.total_other_downloads}")
             stats_lines.append(f"Общий размер: {user_stats.total_size_mb:.1f} MB")
 
             if user_stats.failed_downloads > 0:
@@ -192,9 +194,7 @@ def register_command_handlers(router: Router):
 
             total_attempts = user_stats.downloads_count + user_stats.failed_downloads
             if total_attempts > 0:
-                success_rate = (
-                    (user_stats.total_videos + user_stats.total_audios) / total_attempts
-                ) * 100
+                success_rate = (user_stats.downloads_count / total_attempts) * 100
                 stats_lines.append(f"Успешные загрузки: {success_rate:.1f}%")
 
         await message.reply("\n".join(stats_lines).strip())

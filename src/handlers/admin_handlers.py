@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
 
@@ -71,6 +73,7 @@ def _build_admin_panel_text():
     total_downloads = sum(item.downloads_count for item in all_stats.values())
     total_videos = sum(item.total_videos for item in all_stats.values())
     total_audios = sum(item.total_audios for item in all_stats.values())
+    total_other = sum(item.total_other_downloads for item in all_stats.values())
     total_failed = sum(item.failed_downloads for item in all_stats.values())
     total_size = sum(item.total_size_mb for item in all_stats.values())
 
@@ -82,6 +85,7 @@ def _build_admin_panel_text():
             f"Всего загрузок: {total_downloads}",
             f"Видео загружено: {total_videos}",
             f"Аудио загружено: {total_audios}",
+            f"Прочие файлы: {total_other}",
             f"Ошибок: {total_failed}",
             f"Общий размер: {total_size:.1f} MB",
             "",
@@ -98,6 +102,7 @@ def _build_global_stats_text():
     total_downloads = sum(item.downloads_count for item in all_stats.values())
     total_videos = sum(item.total_videos for item in all_stats.values())
     total_audios = sum(item.total_audios for item in all_stats.values())
+    total_other = sum(item.total_other_downloads for item in all_stats.values())
     total_failed = sum(item.failed_downloads for item in all_stats.values())
     total_size = sum(item.total_size_mb for item in all_stats.values())
 
@@ -105,7 +110,7 @@ def _build_global_stats_text():
     avg_size = total_size / total_downloads if total_downloads else 0
     active_users = sum(1 for item in all_stats.values() if item.downloads_count > 0)
     attempts = total_downloads + total_failed
-    success_rate = ((total_videos + total_audios) / attempts * 100) if attempts else 0
+    success_rate = (total_downloads / attempts * 100) if attempts else 0
 
     lines = [
         "Глобальная статистика ReSave",
@@ -115,6 +120,7 @@ def _build_global_stats_text():
         f"Всего загрузок: {total_downloads}",
         f"Видео: {total_videos}",
         f"Аудио: {total_audios}",
+        f"Прочее: {total_other}",
         f"Ошибок: {total_failed}",
         f"Успешность: {success_rate:.1f}%",
         f"Общий размер: {total_size:.1f} MB",
@@ -159,7 +165,7 @@ def _build_user_list_text():
             [
                 f"ID: {user_id}",
                 f"├ Загрузок: {stats.downloads_count}",
-                f"├ Видео: {stats.total_videos} | Аудио: {stats.total_audios}",
+                f"├ Видео: {stats.total_videos} | Аудио: {stats.total_audios} | Прочее: {stats.total_other_downloads}",
                 f"└ Размер: {stats.total_size_mb:.1f} MB",
                 "",
             ]
@@ -364,8 +370,7 @@ def register_admin_handlers(router: Router):
             return
 
         stats_manager = get_stats_manager()
-        stats_manager.stats.clear()
-        stats_manager._save_stats()
+        stats_manager.clear_all_stats()
 
         await call.answer("Статистика очищена.")
         await call.message.edit_text(

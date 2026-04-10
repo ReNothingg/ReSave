@@ -2,9 +2,6 @@ import logging
 import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-
-import aiohttp
 
 import config
 from .models import DownloadTask
@@ -22,11 +19,8 @@ class DownloadManager:
         self.lock = threading.Lock()
         self.worker_threads = []
         self.status_thread = None
-        self.session = None
         self.bot = None
         self._started = False
-
-        self.thread_pool = ThreadPoolExecutor(max_workers=max(10, max_concurrent_downloads * 2))
 
     def set_bot(self, bot):
         self.bot = bot
@@ -45,16 +39,6 @@ class DownloadManager:
 
         self.status_thread = threading.Thread(target=self._status_updater, daemon=True)
         self.status_thread.start()
-
-    async def create_session(self):
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-        return self.session
-
-    async def close_session(self):
-        if self.session:
-            await self.session.close()
-            self.session = None
 
     def get_user_task_count(self, chat_id):
         if chat_id <= 0:

@@ -2,12 +2,27 @@ import asyncio
 import io
 import logging
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
+from aiogram import Bot, Dispatcher, Router
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeChat
+
+from src.core.download_manager import DownloadManager
+from src.core.user_stats import get_stats_manager
+from src.handlers.admin_handlers import register_admin_handlers
+from src.handlers.command_handlers import register_command_handlers
+from src.handlers.download_handlers import (
+    register_download_handlers,
+    set_download_manager,
+)
+from src.utils.aiogram_bot_adapter import AiogramSyncBotAdapter
+from src.utils.ffmpeg_handler import ensure_ffmpeg
+from src.utils.file_utils import cleanup_old_files, ensure_temp_dir
+from src.utils.telegram_bot_wrapper import TelegramBotWrapper
 
 
 class UnicodeStreamHandler(logging.StreamHandler):
@@ -18,7 +33,7 @@ class UnicodeStreamHandler(logging.StreamHandler):
 
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler("bot.log", encoding="utf-8"),
@@ -26,16 +41,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
-
-
-def ensure_module(name, package=None):
-    try:
-        return __import__(name)
-    except ImportError:
-        package_name = package or name
-        logger.info("Устанавливаю модуль %s...", package_name)
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        return __import__(name)
 
 
 async def setup_bot_commands(bot, BotCommand, BotCommandScopeChat):
@@ -73,37 +78,14 @@ async def notify_admins_async(bot, text: str):
 
 
 async def run():
-    ensure_module("aiogram")
-    logger.info("Проверка требуемых модулей...")
-    ensure_module("yt_dlp", "yt-dlp")
-    ensure_module("aiohttp")
-    ensure_module("aiofiles")
-    ensure_module("PIL", "Pillow")
-    ensure_module("gallery_dl", "gallery-dl")
+    settings = config.validate_settings()
 
-    from aiogram import Bot, Dispatcher, Router
-    from aiogram.fsm.storage.memory import MemoryStorage
-    from aiogram.types import BotCommand, BotCommandScopeChat
-
-    from src.core.download_manager import DownloadManager
-    from src.core.user_stats import get_stats_manager
-    from src.handlers.admin_handlers import register_admin_handlers
-    from src.handlers.command_handlers import register_command_handlers
-    from src.handlers.download_handlers import (
-        register_download_handlers,
-        set_download_manager,
-    )
-    from src.utils.aiogram_bot_adapter import AiogramSyncBotAdapter
-    from src.utils.ffmpeg_handler import ensure_ffmpeg
-    from src.utils.file_utils import cleanup_old_files, ensure_temp_dir
-    from src.utils.telegram_bot_wrapper import TelegramBotWrapper
-
-    ensure_temp_dir(config.TEMP_DIR)
-    cleanup_old_files(config.TEMP_DIR)
+    ensure_temp_dir(settings.temp_dir)
+    cleanup_old_files(settings.temp_dir)
 
     logger.info("Инициализация менеджера загрузок...")
     download_manager = DownloadManager(
-        max_concurrent_downloads=config.MAX_CONCURRENT_DOWNLOADS,
+        max_concurrent_downloads=settings.max_concurrent_downloads,
         max_retries=3,
     )
 
@@ -111,7 +93,7 @@ async def run():
     get_stats_manager()
 
     logger.info("Инициализация aiogram...")
-    bot = Bot(token=config.BOT_TOKEN)
+    bot = Bot(token=settings.bot_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
     router = Router()
 

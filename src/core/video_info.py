@@ -1,10 +1,11 @@
 import logging
 import yt_dlp
-import os
+
+import config
 
 logger = logging.getLogger(__name__)
 
-cookie_path = os.path.abspath("cookies.txt")
+cookie_path = config.COOKIES_FILE
 
 
 def fetch_video_info(url):

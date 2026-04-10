@@ -10,7 +10,7 @@
   </p>
 
   <p>
-    <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
+    <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+" />
     <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?logo=telegram&logoColor=white" alt="Telegram Bot" />
     <img src="https://img.shields.io/badge/Powered%20by-yt--dlp-ff4e45" alt="yt-dlp" />
   </p>
@@ -23,6 +23,7 @@
 - Поддерживает работу в группах.
 - Грузит видео в фоне и отправляет результат по готовности.
 - Использует очередь и ограничения на пользователя.
+- Хранит статистику в SQLite и автоматически мигрирует старый `user_stats.json`.
 - Поддерживает админ-команды и базовую статистику.
 
 ## Быстрый старт
@@ -35,10 +36,12 @@ pip install -r requirements.txt
 
 ### Настройка `.env`
 
-Создайте файл `.env` в корне проекта:
+Скопируйте `.env.example` в `.env` и заполните нужные значения:
 
 ```env
 BOT_TOKEN=ваш_токен_бота
+ADMIN_IDS=123456789
+VIP_USERS=
 ```
 
 ### Cookies для `yt-dlp` (опционально)
@@ -58,19 +61,33 @@ python main.py
 | Параметр | Назначение |
 |---|---|
 | `BOT_TOKEN` | Токен Telegram-бота (читается из `.env`) |
+| `ADMIN_IDS`, `VIP_USERS` | ID админов и VIP-пользователей |
 | `TEMP_DIR` | Временная директория для загрузок |
+| `STATS_DB_PATH` | SQLite-файл со статистикой |
 | `MAX_CONCURRENT_DOWNLOADS` | Лимит одновременных загрузок |
 | `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
-| `MAX_FILE_SIZE`, `MAX_VIDEO_DURATION`, `MAX_PLAYLIST_ITEMS` | Ограничения free/premium |
-| `ADMIN_IDS`, `VIP_USERS` | ID админов и VIP-пользователей |
+| `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
+| `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
+| `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
+| `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |
 
 ## Структура проекта
 
 - `main.py` - точка входа.
 - `src/` - основная логика приложения.
+- `tests/` - автоматические тесты.
 - `temp_downloads/` - временные загруженные файлы.
 - `cookies.txt` - cookies для `yt-dlp`.
+- `database.db` - SQLite-база со статистикой.
 - `bot.log` - локальные логи.
+
+## Проверка проекта
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+В репозитории также настроен GitHub Actions workflow `CI`, который компилирует исходники и запускает тесты на каждый push и pull request.
 
 ## Запуск как systemd-сервис (Linux)
 
@@ -90,4 +107,5 @@ sudo systemctl enable resave
 ## Примечания
 
 - Если `ffmpeg` не установлен, часть медиавозможностей может быть недоступна.
-- При первом запуске бот может доустановить недостающие Python-пакеты.
+- Бот больше не устанавливает зависимости на лету: перед запуском нужно явно выполнить `pip install -r requirements.txt`.
+- Обычные плейлисты ставятся в очередь автоматически в среднем качестве, если пользователь укладывается в лимиты.

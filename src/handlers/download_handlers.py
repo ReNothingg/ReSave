@@ -21,8 +21,11 @@ from aiogram.types import (
 )
 
 from ..core.models import InlineQuery as InlineQueryCacheItem
+from .download_processing import (
+    extract_video_info as _extract_video_info,
+    handle_group_download as _handle_group_download,
+)
 from ..utils.message_templates import ErrorMessages, MessageTemplate
-from ..utils.safe_formatter_new import get_safe_formatter
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +201,7 @@ def register_download_handlers(router: Router, sync_bot):
                         "extract_flat": False,
                         "skip_download": True,
                         "socket_timeout": 5,
-                        "cookiefile": os.path.abspath("cookies.txt"),
+                        "cookiefile": config.COOKIES_FILE,
                         "nocheckcertificate": True,
                     }
 
@@ -208,9 +211,12 @@ def register_download_handlers(router: Router, sync_bot):
                     if not info:
                         return None, None
 
+                    if info.get("_type") == "playlist":
+                        return "playlist", info
+
                     original_title = info.get("title", "video")
-                    duration = info.get("duration", 0)
-                    if duration > 600:
+                    duration_error = build_duration_limit_error(user_id, info.get("duration"))
+                    if duration_error:
                         return "too_long", info
 
                     timestamp = int(time.time())
@@ -230,7 +236,7 @@ def register_download_handlers(router: Router, sync_bot):
                         "noplaylist": True,
                         "merge_output_format": "mp4",
                         "http_chunk_size": 10485760,
-                        "cookiefile": os.path.abspath("cookies.txt"),
+                        "cookiefile": config.COOKIES_FILE,
                         "socket_timeout": 10,
                         "retries": 1,
                         "fragment_retries": 1,
@@ -329,7 +335,7 @@ def register_download_handlers(router: Router, sync_bot):
             except asyncio.TimeoutError:
                 file_id, info = "timeout", None
 
-            if file_id and file_id not in {"timeout", "too_long", "too_large"}:
+            if file_id and file_id not in {"timeout", "too_long", "too_large", "playlist"}:
                 title = info.get("title", "Видео")
                 caption = MessageTemplate.format_inline_caption(title, query_text)
                 result = InlineQueryResultCachedVideo(
@@ -364,6 +370,52 @@ def register_download_handlers(router: Router, sync_bot):
                             f'Видео "{title}" еще загружается.\n\n'
                             f"Откройте @ReSafeBot и отправьте ссылку:\n{query_text}"
                         )
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "too_long":
+                limit_text = build_duration_limit_error(
+                    user_id,
+                    info.get("duration") if info else None,
+                ) or "Видео превышает допустимую длительность."
+                result = InlineQueryResultArticle(
+                    id=f"limit_{uuid4().hex[:8]}",
+                    title="Видео слишком длинное",
+                    description="Откройте бота, чтобы скачать с подсказками",
+                    input_message_content=InputTextMessageContent(
+                        message_text=limit_text
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "playlist":
+                playlist_text = build_playlist_limit_error(
+                    user_id,
+                    len(collect_playlist_entries(info or {})),
+                ) or "Плейлист лучше отправить напрямую в @ReSafeBot."
+                result = InlineQueryResultArticle(
+                    id=f"playlist_{uuid4().hex[:8]}",
+                    title="Плейлист откройте в боте",
+                    description="Inline-режим рассчитан на одиночные ролики",
+                    input_message_content=InputTextMessageContent(
+                        message_text=playlist_text
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
@@ -571,36 +623,12 @@ def register_download_handlers(router: Router, sync_bot):
 
 
 def handle_group_download(url: str, chat_id: int, message_id: int):
-    try:
-        import yt_dlp
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "socket_timeout": 30,
-            "cookiefile": os.path.abspath("cookies.txt"),
-            "nocheckcertificate": True,
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        if not info:
-            logger.warning("Не удалось получить информацию для %s в группе %s", url, chat_id)
-            return
-
-        _download_manager.add_task(
-            url=url,
-            chat_id=chat_id,
-            message_id=message_id,
-            info=info,
-            action="medium",
-            reply_to_id=message_id,
-            silent_mode=True,
-        )
-    except Exception as exc:
-        logger.error("Ошибка при обработке ссылки из группы %s: %s", chat_id, exc)
+    _handle_group_download(
+        url,
+        chat_id,
+        message_id,
+        download_manager=_download_manager,
+    )
 
 
 def extract_video_info(
@@ -611,101 +639,14 @@ def extract_video_info(
     status_message_id: int,
     cache: dict[int, dict],
 ):
-    try:
-        from ..core.video_info import fetch_video_info
-
-        if "tiktok.com" in url and "/photo/" in url:
-            if not _download_manager.can_add_task(chat_id):
-                bot.edit_message_text(
-                    _build_download_limit_text(chat_id),
-                    chat_id,
-                    status_message_id,
-                )
-                return
-
-            bot.edit_message_text(
-                "🖼️ Обнаружено TikTok фото. Начинаю скачивание...",
-                chat_id,
-                status_message_id,
-            )
-            try:
-                _download_manager.add_task(
-                    url=url,
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    info={"title": "TikTok Photo"},
-                    action="tiktok_photo",
-                    reply_to_id=user_message_id,
-                    silent_mode=False,
-                )
-            except ValueError:
-                bot.edit_message_text(
-                    _build_download_limit_text(chat_id),
-                    chat_id,
-                    status_message_id,
-                )
-            return
-
-        info = fetch_video_info(url)
-        if not info:
-            bot.edit_message_text(
-                "❌ Не удалось получить информацию о видео.",
-                chat_id,
-                status_message_id,
-            )
-            return
-
-        if info.get("_type") == "playlist":
-            bot.edit_message_text(
-                "🎶 Поддержка плейлистов пока не реализована.",
-                chat_id,
-                status_message_id,
-            )
-            return
-
-        resolutions: dict[int, dict] = {}
-        for item in info.get("formats", []):
-            height = item.get("height")
-            if height and item.get("vcodec", "none") != "none":
-                existing = resolutions.get(height)
-                if existing is None or (item.get("filesize") or 0) > (existing.get("filesize") or 0):
-                    resolutions[height] = item
-
-        cache[user_message_id] = {
-            "url": url,
-            "info": info,
-            "resolutions": resolutions,
-            "chat_id": chat_id,
-        }
-
-        markup = _build_download_markup(user_message_id, info, resolutions)
-
-        lines = [f"📹 {info.get('title', 'video')}"]
-
-        if info.get("uploader"):
-            lines.append(f"👤 {info['uploader']}")
-
-        if info.get("duration"):
-            minutes, seconds = divmod(int(info["duration"]), 60)
-            lines.append(f"⏱️ {minutes:02d}:{seconds:02d}")
-
-        lines.extend(["", "Выберите качество для скачивания:"])
-
-        get_safe_formatter().safe_edit_message_text(
-            bot,
-            "\n".join(lines),
-            chat_id,
-            status_message_id,
-            reply_markup=markup,
-        )
-    except Exception as exc:
-        error_message = str(exc)
-        if "This video is unavailable" in error_message:
-            user_text = "❌ Это видео недоступно."
-        elif "Private video" in error_message:
-            user_text = "❌ Это приватное видео."
-        else:
-            user_text = f"❌ Ошибка: {error_message}"
-
-        bot.edit_message_text(user_text, chat_id, status_message_id)
-        logger.error("Ошибка при получении информации о видео %s: %s", url, exc)
+    _extract_video_info(
+        bot,
+        chat_id,
+        user_message_id,
+        url,
+        status_message_id,
+        cache,
+        download_manager=_download_manager,
+        build_download_limit_text=_build_download_limit_text,
+        build_download_markup=_build_download_markup,
+    )

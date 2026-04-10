@@ -1,8 +1,5 @@
 aiogram>=3.4.1
 yt-dlp
-aiohttp
-aiofiles
-cachetools
 Pillow
 requests
 gallery-dl

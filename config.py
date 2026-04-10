@@ -1,30 +1,134 @@
+from __future__ import annotations
+
 import os
+from dataclasses import dataclass
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
-TEMP_DIR = "temp_downloads"
-MAX_CONCURRENT_DOWNLOADS = 15
-MAX_DOWNLOADS_PER_USER = 10
-VIP_USERS = [7878539493]
-MAX_CONCURRENT_CHUNKS = 8
-DOWNLOAD_TIMEOUT = 3600
-UPLOAD_TIMEOUT = 1800
-LOG_LEVEL = "NONE"
-SEND_AS_DOC_LIMIT = 20 * 1024 * 1024
-COOKIES_FILE = os.path.abspath("cookies.txt")
-ADMIN_IDS = [7878539493]
-DB_NAME = "database.db"
-PREMIUM_PRICE_STARS = 250
-PREMIUM_DURATION_DAYS = 30
-MAX_VIDEO_DURATION = {
-    "free": 900,
-    "premium": 10800
-}
-MAX_PLAYLIST_ITEMS = {
-    "free": 0,
-    "premium": 50
-}
+
+def _get_str(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+def _get_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw_value = os.getenv(name)
+    if raw_value in {None, ""}:
+        value = default
+    else:
+        try:
+            value = int(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer, got: {raw_value!r}") from exc
+
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got: {value}")
+
+    return value
+
+
+def _get_id_list(name: str) -> tuple[int, ...]:
+    raw_value = os.getenv(name, "")
+    if not raw_value.strip():
+        return ()
+
+    values: list[int] = []
+    for item in raw_value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.append(int(item))
+        except ValueError as exc:
+            raise ValueError(f"{name} must contain comma-separated integers, got: {raw_value!r}") from exc
+    return tuple(values)
+
+
+def _resolve_path(value: str) -> str:
+    path = Path(value)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return str(path.resolve())
+
+
+@dataclass(frozen=True)
+class Settings:
+    bot_token: str
+    temp_dir: str
+    max_concurrent_downloads: int
+    max_downloads_per_user: int
+    max_file_size: int
+    send_as_doc_limit: int
+    cookies_file: str
+    stats_db_path: str
+    admin_ids: tuple[int, ...]
+    vip_users: tuple[int, ...]
+    log_level: str
+    max_video_duration: dict[str, int]
+    max_playlist_items: dict[str, int]
+
+
+def build_settings() -> Settings:
+    temp_dir = _resolve_path(_get_str("TEMP_DIR", "temp_downloads"))
+    cookies_file = _resolve_path(_get_str("COOKIES_FILE", "cookies.txt"))
+    stats_db_path = _resolve_path(_get_str("STATS_DB_PATH", _get_str("DB_NAME", "database.db")))
+
+    return Settings(
+        bot_token=_get_str("BOT_TOKEN"),
+        temp_dir=temp_dir,
+        max_concurrent_downloads=_get_int("MAX_CONCURRENT_DOWNLOADS", 15, minimum=1),
+        max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 10, minimum=0),
+        max_file_size=_get_int("MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024, minimum=1),
+        send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", 20 * 1024 * 1024, minimum=1),
+        cookies_file=cookies_file,
+        stats_db_path=stats_db_path,
+        admin_ids=_get_id_list("ADMIN_IDS"),
+        vip_users=_get_id_list("VIP_USERS"),
+        log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        max_video_duration={
+            "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
+            "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
+        },
+        max_playlist_items={
+            "free": _get_int("MAX_PLAYLIST_ITEMS_FREE", 0, minimum=0),
+            "premium": _get_int("MAX_PLAYLIST_ITEMS_PREMIUM", 50, minimum=0),
+        },
+    )
+
+
+def validate_settings(settings: Settings | None = None) -> Settings:
+    resolved = settings or SETTINGS
+    if not resolved.bot_token:
+        raise RuntimeError("BOT_TOKEN is required. Add it to the environment or .env file.")
+
+    log_level_name = resolved.log_level.upper()
+    if log_level_name not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+        raise RuntimeError(
+            "LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, DEBUG."
+        )
+
+    if resolved.send_as_doc_limit > resolved.max_file_size:
+        raise RuntimeError("SEND_AS_DOC_LIMIT cannot be greater than MAX_FILE_SIZE.")
+
+    return resolved
+
+
+SETTINGS = build_settings()
+
+BOT_TOKEN = SETTINGS.bot_token
+TEMP_DIR = SETTINGS.temp_dir
+MAX_CONCURRENT_DOWNLOADS = SETTINGS.max_concurrent_downloads
+MAX_DOWNLOADS_PER_USER = SETTINGS.max_downloads_per_user
+MAX_FILE_SIZE = SETTINGS.max_file_size
+SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
+COOKIES_FILE = SETTINGS.cookies_file
+DB_NAME = SETTINGS.stats_db_path
+STATS_DB_PATH = SETTINGS.stats_db_path
+ADMIN_IDS = SETTINGS.admin_ids
+VIP_USERS = SETTINGS.vip_users
+LOG_LEVEL = SETTINGS.log_level
+MAX_VIDEO_DURATION = SETTINGS.max_video_duration
+MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items
