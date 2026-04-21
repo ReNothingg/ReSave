@@ -20,6 +20,11 @@ from aiogram.types import (
     Message,
 )
 
+from ..core.access import (
+    build_duration_limit_error,
+    build_playlist_limit_error,
+    collect_playlist_entries,
+)
 from ..core.models import InlineQuery as InlineQueryCacheItem
 from .download_processing import (
     extract_video_info as _extract_video_info,
