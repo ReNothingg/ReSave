@@ -12,6 +12,7 @@ class UserLimits:
     max_video_duration: int
     max_playlist_items: int
     max_file_size: int
+    max_upload_size: int
 
 
 def is_premium_user(user_id: int) -> bool:
@@ -27,6 +28,7 @@ def get_user_limits(user_id: int) -> UserLimits:
         max_video_duration=config.MAX_VIDEO_DURATION[tier],
         max_playlist_items=config.MAX_PLAYLIST_ITEMS[tier],
         max_file_size=config.MAX_FILE_SIZE,
+        max_upload_size=config.BOT_API_UPLOAD_LIMIT,
     )
 
 
@@ -45,10 +47,19 @@ def build_duration_limit_error(user_id: int, duration_seconds: int | float | Non
 
 def build_file_size_limit_error(user_id: int, file_size_bytes: int) -> str | None:
     limits = get_user_limits(user_id)
-    if file_size_bytes <= limits.max_file_size:
+    effective_limit = min(limits.max_file_size, limits.max_upload_size)
+    if file_size_bytes <= effective_limit:
         return None
 
-    size_mb = limits.max_file_size / (1024 * 1024)
+    size_mb = effective_limit / (1024 * 1024)
+    if limits.max_upload_size < limits.max_file_size:
+        return (
+            f"{ErrorMessages.FILE_SIZE_LIMIT}\n\n"
+            f"Текущий Bot API принимает файлы до {size_mb:.0f} MB. "
+            "Для отправки до 2000 MB запустите локальный telegram-bot-api "
+            "и задайте BOT_API_BASE_URL."
+        )
+
     return (
         f"{ErrorMessages.FILE_SIZE_LIMIT}\n\n"
         f"Лимит для вашей учетной записи: {size_mb:.0f} MB."

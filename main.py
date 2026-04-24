@@ -8,6 +8,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from aiogram import Bot, Dispatcher, Router
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 
@@ -41,6 +44,20 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+async def ensure_bot_api_available(bot: Bot, settings: config.Settings):
+    try:
+        await bot.get_me()
+    except TelegramNetworkError as exc:
+        if settings.bot_api_base_url:
+            raise RuntimeError(
+                "Локальный Telegram Bot API недоступен по адресу "
+                f"{settings.bot_api_base_url}. Запустите `docker compose up -d "
+                "telegram-bot-api` или уберите BOT_API_BASE_URL из .env, "
+                "чтобы вернуться к облачному Bot API с лимитом 50 MB."
+            ) from exc
+        raise
 
 
 async def setup_bot_commands(bot, BotCommand, BotCommandScopeChat):
@@ -93,41 +110,56 @@ async def run():
     get_stats_manager()
 
     logger.info("Инициализация aiogram...")
-    bot = Bot(token=settings.bot_token)
+    session = None
+    if settings.bot_api_base_url:
+        api_server = TelegramAPIServer.from_base(
+            settings.bot_api_base_url,
+            is_local=settings.bot_api_is_local,
+        )
+        session = AiohttpSession(api=api_server, timeout=600)
+        logger.info(
+            "Используется Bot API server: %s (local=%s)",
+            settings.bot_api_base_url,
+            settings.bot_api_is_local,
+        )
+
+    bot = Bot(token=settings.bot_token, session=session)
     dispatcher = Dispatcher(storage=MemoryStorage())
     router = Router()
 
-    sync_bot = TelegramBotWrapper(
-        AiogramSyncBotAdapter(bot=bot, loop=asyncio.get_running_loop())
-    )
-
-    logger.info("Проверка FFmpeg...")
-    if not ensure_ffmpeg(auto_download=False):
-        warning_text = (
-            "FFmpeg не найден на сервере. "
-            "Функции конвертации (GIF/аудио) могут быть недоступны."
-        )
-        logger.warning(warning_text)
-        await notify_admins_async(bot, f"⚠️ [ReSave] {warning_text}")
-
-    download_manager.set_bot(sync_bot)
-    set_download_manager(download_manager)
-
-    logger.info("Регистрация aiogram-хендлеров...")
-    register_command_handlers(router)
-    register_download_handlers(router, sync_bot)
-    register_admin_handlers(router)
-    dispatcher.include_router(router)
-
-    await setup_bot_commands(bot, BotCommand, BotCommandScopeChat)
-
-    logger.info("=" * 50)
-    logger.info("ReSave запущен")
-    logger.info("Inline-режим активирован")
-    logger.info("Групповой режим активирован")
-    logger.info("=" * 50)
-
     try:
+        await ensure_bot_api_available(bot, settings)
+
+        sync_bot = TelegramBotWrapper(
+            AiogramSyncBotAdapter(bot=bot, loop=asyncio.get_running_loop())
+        )
+
+        logger.info("Проверка FFmpeg...")
+        if not ensure_ffmpeg(auto_download=False):
+            warning_text = (
+                "FFmpeg не найден на сервере. "
+                "Функции конвертации (GIF/аудио) могут быть недоступны."
+            )
+            logger.warning(warning_text)
+            await notify_admins_async(bot, f"⚠️ [ReSave] {warning_text}")
+
+        download_manager.set_bot(sync_bot)
+        set_download_manager(download_manager)
+
+        logger.info("Регистрация aiogram-хендлеров...")
+        register_command_handlers(router)
+        register_download_handlers(router, sync_bot)
+        register_admin_handlers(router)
+        dispatcher.include_router(router)
+
+        await setup_bot_commands(bot, BotCommand, BotCommandScopeChat)
+
+        logger.info("=" * 50)
+        logger.info("ReSave запущен")
+        logger.info("Inline-режим активирован")
+        logger.info("Групповой режим активирован")
+        logger.info("=" * 50)
+
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),
@@ -139,6 +171,9 @@ async def run():
 def main():
     try:
         asyncio.run(run())
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        raise SystemExit(1)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Завершение работы ReSave...")
 

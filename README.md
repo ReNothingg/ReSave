@@ -44,6 +44,32 @@ ADMIN_IDS=123456789
 VIP_USERS=
 ```
 
+Для отправки файлов больше стандартного лимита Bot API поднимите локальный
+`telegram-bot-api` и укажите его адрес. `TELEGRAM_API_ID` и
+`TELEGRAM_API_HASH` создаются на https://my.telegram.org/apps.
+
+```env
+BOT_API_BASE_URL=http://127.0.0.1:8081
+BOT_API_IS_LOCAL=true
+MAX_FILE_SIZE=2097152000
+SEND_AS_DOC_LIMIT=2097152000
+TELEGRAM_API_ID=ваш_api_id
+TELEGRAM_API_HASH=ваш_api_hash
+```
+
+Запуск локального Bot API через Docker:
+
+```bash
+docker compose up -d telegram-bot-api
+docker compose logs -f telegram-bot-api
+```
+
+После этого запускайте бота обычной командой:
+
+```bash
+python main.py
+```
+
 ### Cookies для `yt-dlp` (опционально)
 
 Если нужны авторизованные источники, добавьте cookies в `cookies.txt`.
@@ -67,6 +93,7 @@ python main.py
 | `MAX_CONCURRENT_DOWNLOADS` | Лимит одновременных загрузок |
 | `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
 | `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
+| `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
 | `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
 | `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |

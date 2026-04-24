@@ -29,54 +29,53 @@ def send_file_with_retry(task, file_path, title, bot):
         duration = task.info.get("duration")
         safe_duration = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
 
-        with open(file_path, "rb") as file_obj:
-            if task.action == "audio" and file_extension in audio_extensions:
-                audio_kwargs = {}
-                if safe_duration is not None:
-                    audio_kwargs["duration"] = safe_duration
+        if task.action == "audio" and file_extension in audio_extensions:
+            audio_kwargs = {}
+            if safe_duration is not None:
+                audio_kwargs["duration"] = safe_duration
 
-                bot.send_audio(
-                    task.chat_id,
-                    file_obj,
-                    title=original_title,
-                    performer=task.info.get("uploader", "Unknown"),
-                    timeout=300,
-                    reply_to_message_id=task.reply_to_id,
-                    **audio_kwargs,
-                )
-                return
-
-            caption = MessageTemplate.format_caption(
-                title=original_title,
-                url=task.url,
-                action="video",
-                file_size=file_size_mb,
-            )
-            if file_size_bytes > config.SEND_AS_DOC_LIMIT:
-                visible_file_name = (
-                    f"{sanitize_filename(original_title) or 'video'}"
-                    f"{file_extension or '.mp4'}"
-                )
-                bot.send_document(
-                    task.chat_id,
-                    file_obj,
-                    caption=caption,
-                    parse_mode="HTML",
-                    timeout=600,
-                    reply_to_message_id=task.reply_to_id,
-                    visible_file_name=visible_file_name,
-                )
-                return
-
-            bot.send_video(
+            bot.send_audio(
                 task.chat_id,
-                file_obj,
+                file_path,
+                title=original_title,
+                performer=task.info.get("uploader", "Unknown"),
+                timeout=300,
+                reply_to_message_id=task.reply_to_id,
+                **audio_kwargs,
+            )
+            return
+
+        caption = MessageTemplate.format_caption(
+            title=original_title,
+            url=task.url,
+            action="video",
+            file_size=file_size_mb,
+        )
+        if file_size_bytes > config.SEND_AS_DOC_LIMIT:
+            visible_file_name = (
+                f"{sanitize_filename(original_title) or 'video'}"
+                f"{file_extension or '.mp4'}"
+            )
+            bot.send_document(
+                task.chat_id,
+                file_path,
                 caption=caption,
                 parse_mode="HTML",
-                supports_streaming=True,
                 timeout=600,
                 reply_to_message_id=task.reply_to_id,
+                visible_file_name=visible_file_name,
             )
+            return
+
+        bot.send_video(
+            task.chat_id,
+            file_path,
+            caption=caption,
+            parse_mode="HTML",
+            supports_streaming=True,
+            timeout=600,
+            reply_to_message_id=task.reply_to_id,
+        )
 
     def on_retry(attempt, delay):
         if not task.silent_mode:

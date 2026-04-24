@@ -22,6 +22,7 @@ from aiogram.types import (
 
 from ..core.access import (
     build_duration_limit_error,
+    build_file_size_limit_error,
     build_playlist_limit_error,
     collect_playlist_entries,
 )
@@ -264,21 +265,20 @@ def register_download_handlers(router: Router, sync_bot):
                         return None, None
 
                     file_size = os.path.getsize(file_path)
-                    if file_size > 48 * 1024 * 1024:
+                    if build_file_size_limit_error(user_id, file_size):
                         os.remove(file_path)
                         return "too_large", info
 
                     try:
-                        with open(file_path, "rb") as video_file:
-                            caption = MessageTemplate.format_inline_caption(original_title, query_text)
-                            message = sync_bot.send_video(
-                                user_id,
-                                video_file,
-                                caption=caption,
-                                parse_mode="HTML",
-                                supports_streaming=True,
-                                timeout=60,
-                            )
+                        caption = MessageTemplate.format_inline_caption(original_title, query_text)
+                        message = sync_bot.send_video(
+                            user_id,
+                            file_path,
+                            caption=caption,
+                            parse_mode="HTML",
+                            supports_streaming=True,
+                            timeout=60,
+                        )
                         file_id = message.video.file_id
 
                         try:
@@ -421,6 +421,29 @@ def register_download_handlers(router: Router, sync_bot):
                     description="Inline-режим рассчитан на одиночные ролики",
                     input_message_content=InputTextMessageContent(
                         message_text=playlist_text
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "too_large":
+                limit_text = (
+                    build_file_size_limit_error(user_id, config.BOT_API_UPLOAD_LIMIT + 1)
+                    or "Видео превышает допустимый размер."
+                )
+                result = InlineQueryResultArticle(
+                    id=f"size_limit_{uuid4().hex[:8]}",
+                    title="Файл слишком большой",
+                    description="Откройте бота, чтобы скачать с подсказками",
+                    input_message_content=InputTextMessageContent(
+                        message_text=limit_text
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )

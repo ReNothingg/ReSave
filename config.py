@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+CLOUD_BOT_API_UPLOAD_LIMIT = 50 * 1024 * 1024
+LOCAL_BOT_API_UPLOAD_LIMIT = 2000 * 1024 * 1024
+
 
 def _get_str(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
@@ -28,6 +31,20 @@ def _get_int(name: str, default: int, *, minimum: int | None = None) -> int:
         raise ValueError(f"{name} must be >= {minimum}, got: {value}")
 
     return value
+
+
+def _get_bool(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value in {None, ""}:
+        return default
+
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    raise ValueError(f"{name} must be a boolean, got: {raw_value!r}")
 
 
 def _get_id_list(name: str) -> tuple[int, ...]:
@@ -62,6 +79,9 @@ class Settings:
     max_downloads_per_user: int
     max_file_size: int
     send_as_doc_limit: int
+    bot_api_base_url: str
+    bot_api_is_local: bool
+    bot_api_upload_limit: int
     cookies_file: str
     stats_db_path: str
     admin_ids: tuple[int, ...]
@@ -75,6 +95,11 @@ def build_settings() -> Settings:
     temp_dir = _resolve_path(_get_str("TEMP_DIR", "temp_downloads"))
     cookies_file = _resolve_path(_get_str("COOKIES_FILE", "cookies.txt"))
     stats_db_path = _resolve_path(_get_str("STATS_DB_PATH", _get_str("DB_NAME", "database.db")))
+    bot_api_base_url = _get_str("BOT_API_BASE_URL")
+    bot_api_is_local = _get_bool("BOT_API_IS_LOCAL", bool(bot_api_base_url))
+    bot_api_upload_limit = (
+        LOCAL_BOT_API_UPLOAD_LIMIT if bot_api_is_local else CLOUD_BOT_API_UPLOAD_LIMIT
+    )
 
     return Settings(
         bot_token=_get_str("BOT_TOKEN"),
@@ -83,6 +108,9 @@ def build_settings() -> Settings:
         max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 10, minimum=0),
         max_file_size=_get_int("MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024, minimum=1),
         send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", 20 * 1024 * 1024, minimum=1),
+        bot_api_base_url=bot_api_base_url,
+        bot_api_is_local=bot_api_is_local,
+        bot_api_upload_limit=bot_api_upload_limit,
         cookies_file=cookies_file,
         stats_db_path=stats_db_path,
         admin_ids=_get_id_list("ADMIN_IDS"),
@@ -124,6 +152,9 @@ MAX_CONCURRENT_DOWNLOADS = SETTINGS.max_concurrent_downloads
 MAX_DOWNLOADS_PER_USER = SETTINGS.max_downloads_per_user
 MAX_FILE_SIZE = SETTINGS.max_file_size
 SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
+BOT_API_BASE_URL = SETTINGS.bot_api_base_url
+BOT_API_IS_LOCAL = SETTINGS.bot_api_is_local
+BOT_API_UPLOAD_LIMIT = SETTINGS.bot_api_upload_limit
 COOKIES_FILE = SETTINGS.cookies_file
 DB_NAME = SETTINGS.stats_db_path
 STATS_DB_PATH = SETTINGS.stats_db_path
