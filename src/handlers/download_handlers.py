@@ -600,7 +600,7 @@ def register_download_handlers(router: Router, sync_bot):
         await call.answer("✅ Начинаю скачивание.")
         await call.message.edit_text("📥 Добавляю в очередь...")
 
-        format_param = f"best[height<={int(parts[2])}]" if action == "res" else None
+        format_param = int(parts[2]) if action == "res" else None
         url = download_info["url"]
         action_type = action
 

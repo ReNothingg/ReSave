@@ -136,6 +136,13 @@ def _download_and_send_video(task, bot, temp_dir):
     output_path = str(work_dir / "media")
 
     fmt, post, output_template = _get_format_options(task, output_path)
+    logger.info(
+        "Download format selected: task_id=%s action=%s format_param=%s format=%s",
+        task.task_id,
+        task.action,
+        task.format_param,
+        fmt,
+    )
     if task.action in {"audio", "gif"} and not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg is not installed on server")
 
@@ -209,21 +216,21 @@ def _download_and_send_video(task, bot, temp_dir):
 def _get_format_options(task, output_path):
     if task.action == "best":
         return (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best",
+            "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             [],
             f"{output_path}.%(ext)s",
         )
 
     if task.action == "medium":
         return (
-            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
             [],
             f"{output_path}.%(ext)s",
         )
 
     if task.action == "low":
         return (
-            "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "bestvideo[height<=480][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
             [],
             f"{output_path}.%(ext)s",
         )
@@ -243,8 +250,9 @@ def _get_format_options(task, output_path):
         )
 
     if task.action == "res" and task.format_param:
+        height = int(task.format_param)
         return (
-            f"{task.format_param}[ext=mp4]/{task.format_param}/best",
+            f"bestvideo[height={height}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
             [],
             f"{output_path}.%(ext)s",
         )
