@@ -87,6 +87,7 @@ class Settings:
     admin_ids: tuple[int, ...]
     vip_users: tuple[int, ...]
     log_level: str
+    inline_download_enabled: bool
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -104,8 +105,8 @@ def build_settings() -> Settings:
     return Settings(
         bot_token=_get_str("BOT_TOKEN"),
         temp_dir=temp_dir,
-        max_concurrent_downloads=_get_int("MAX_CONCURRENT_DOWNLOADS", 15, minimum=1),
-        max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 10, minimum=0),
+        max_concurrent_downloads=_get_int("MAX_CONCURRENT_DOWNLOADS", 1, minimum=1),
+        max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 1, minimum=0),
         max_file_size=_get_int("MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024, minimum=1),
         send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", 20 * 1024 * 1024, minimum=1),
         bot_api_base_url=bot_api_base_url,
@@ -116,6 +117,7 @@ def build_settings() -> Settings:
         admin_ids=_get_id_list("ADMIN_IDS"),
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        inline_download_enabled=_get_bool("INLINE_DOWNLOAD_ENABLED", False),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -161,5 +163,6 @@ STATS_DB_PATH = SETTINGS.stats_db_path
 ADMIN_IDS = SETTINGS.admin_ids
 VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
+INLINE_DOWNLOAD_ENABLED = SETTINGS.inline_download_enabled
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items

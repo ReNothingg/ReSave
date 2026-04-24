@@ -27,8 +27,6 @@ def fetch_video_info(url):
             "socket_timeout": 10,
             "cookiefile": cookie_path,
             "nocheckcertificate": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

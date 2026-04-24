@@ -197,6 +197,32 @@ def register_download_handlers(router: Router, sync_bot):
                     )
                     return
 
+            if not config.INLINE_DOWNLOAD_ENABLED:
+                open_bot_button = InlineQueryResultsButton(
+                    text="Open ReSave",
+                    start_parameter="start",
+                )
+                result = InlineQueryResultArticle(
+                    id=f"open_bot_{uuid4().hex[:8]}",
+                    title="Откройте ReSave",
+                    description="Большие файлы скачиваются напрямую в боте",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            "Для больших файлов откройте @ReSafeBot и отправьте ссылку:\n"
+                            f"{query_text}"
+                        )
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
             def quick_download():
                 import yt_dlp
 
