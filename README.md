@@ -106,6 +106,25 @@ FastAPI/Flask API можно добавить для внешних запрос
 `$HOME/.local/bin/telegram-bot-api`, и запускайте его вместе с ботом одним
 Service-процессом.
 
+Собрать Linux-бинарник на Mac можно через Docker:
+
+```bash
+bash scripts/build_telegram_bot_api_linux_amd64.sh
+```
+
+Готовый файл появится здесь:
+
+```bash
+dist/telegram-bot-api-linux-amd64
+```
+
+Загрузите его на сервер:
+
+```bash
+scp dist/telegram-bot-api-linux-amd64 renothing@ssh-renothing.alwaysdata.net:/home/renothing/.local/bin/telegram-bot-api
+ssh renothing@ssh-renothing.alwaysdata.net 'chmod +x /home/renothing/.local/bin/telegram-bot-api'
+```
+
 В `.env` нужны:
 
 ```env
