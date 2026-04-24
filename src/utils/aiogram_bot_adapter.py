@@ -45,7 +45,7 @@ class AiogramSyncBotAdapter:
             path = str(file_obj)
             if os.path.exists(path):
                 if config.BOT_API_IS_LOCAL:
-                    return os.path.abspath(path)
+                    return Path(path).resolve().as_uri()
                 return FSInputFile(path, filename=filename)
             return path
 

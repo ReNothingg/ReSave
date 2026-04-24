@@ -145,6 +145,8 @@ class RetryManager:
             "no such file",
             "файл не найден после скачивания",
             "invalid url",
+            "bad request",
+            "invalid file http url",
         ]
 
         for error_key in permanent_errors:
