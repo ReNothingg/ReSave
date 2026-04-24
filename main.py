@@ -53,9 +53,10 @@ async def ensure_bot_api_available(bot: Bot, settings: config.Settings):
         if settings.bot_api_base_url:
             raise RuntimeError(
                 "Локальный Telegram Bot API недоступен по адресу "
-                f"{settings.bot_api_base_url}. Запустите `docker compose up -d "
-                "telegram-bot-api` или уберите BOT_API_BASE_URL из .env, "
-                "чтобы вернуться к облачному Bot API с лимитом 50 MB."
+                f"{settings.bot_api_base_url}. Запустите локальный "
+                "telegram-bot-api любым доступным способом или уберите "
+                "BOT_API_BASE_URL из .env, чтобы вернуться к облачному "
+                "Bot API с лимитом 50 MB."
             ) from exc
         raise
 

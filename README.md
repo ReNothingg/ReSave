@@ -70,6 +70,76 @@ docker compose logs -f telegram-bot-api
 python main.py
 ```
 
+### Запуск без локального Bot API на alwaysdata
+
+Docker не обязателен для работы бота. Но для отправки файлов больше облачного
+лимита Telegram нужен локальный `telegram-bot-api`. Если на сервере нет
+локального `telegram-bot-api`, оставьте `BOT_API_BASE_URL` пустым или удалите
+эту переменную из `.env`.
+
+Минимальный `.env` для Python-only запуска:
+
+```env
+BOT_TOKEN=ваш_токен_бота
+ADMIN_IDS=123456789
+VIP_USERS=
+MAX_FILE_SIZE=52428800
+SEND_AS_DOC_LIMIT=52428800
+```
+
+Команда для вкладки Service на alwaysdata:
+
+```bash
+bash -c 'export PATH=$HOME/.local/bin:$HOME/ffmpeg/ffmpeg-7.0.2-amd64-static:$PATH && cd /home/renothing/ReSave && python main.py'
+```
+
+В таком режиме бот работает через облачный Telegram Bot API. Это полностью
+Python-запуск, но отправка файлов ограничена примерно 50 MB. Собственный
+FastAPI/Flask API можно добавить для внешних запросов к вашему сервису, но он
+не заменит локальный `telegram-bot-api` и не снимет лимит Telegram на загрузку
+больших файлов.
+
+### Локальный Bot API без Docker на alwaysdata
+
+Чтобы отправлять файлы до 2000 MB без Docker, установите бинарник
+`telegram-bot-api` в домашнюю директорию, например в
+`$HOME/.local/bin/telegram-bot-api`, и запускайте его вместе с ботом одним
+Service-процессом.
+
+В `.env` нужны:
+
+```env
+BOT_TOKEN=ваш_токен_бота
+ADMIN_IDS=123456789
+VIP_USERS=
+TELEGRAM_API_ID=ваш_api_id
+TELEGRAM_API_HASH=ваш_api_hash
+MAX_FILE_SIZE=2097152000
+SEND_AS_DOC_LIMIT=2097152000
+```
+
+Команда для вкладки Service:
+
+```bash
+bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh
+```
+
+По умолчанию скрипт ожидает бинарник здесь:
+
+```bash
+/home/renothing/.local/bin/telegram-bot-api
+```
+
+Если путь другой, задайте его перед запуском:
+
+```bash
+bash -c 'export BOT_API_BIN=$HOME/telegram-bot-api/bin/telegram-bot-api && bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh'
+```
+
+Скрипт поднимает Bot API на `127.0.0.1:8081`, поэтому он доступен только боту
+внутри этого же Service-процесса. Это безопаснее, чем открывать порт сервиса
+наружу.
+
 ### Cookies для `yt-dlp` (опционально)
 
 Если нужны авторизованные источники, добавьте cookies в `cookies.txt`.

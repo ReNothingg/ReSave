@@ -56,8 +56,9 @@ def build_file_size_limit_error(user_id: int, file_size_bytes: int) -> str | Non
         return (
             f"{ErrorMessages.FILE_SIZE_LIMIT}\n\n"
             f"Текущий Bot API принимает файлы до {size_mb:.0f} MB. "
-            "Для отправки до 2000 MB запустите локальный telegram-bot-api "
-            "и задайте BOT_API_BASE_URL."
+            "Для отправки до 2000 MB нужен локальный telegram-bot-api "
+            "и BOT_API_BASE_URL. Без root/Docker оставьте облачный Bot API "
+            "и ограничьте размер файлов до 50 MB."
         )
 
     return (
