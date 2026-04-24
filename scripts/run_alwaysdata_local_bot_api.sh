@@ -7,6 +7,7 @@ BOT_API_HOST="${BOT_API_HOST:-127.0.0.1}"
 BOT_API_PORT="${BOT_API_PORT:-8081}"
 BOT_API_DIR="${BOT_API_DIR:-$APP_DIR/.telegram-bot-api}"
 BOT_API_TEMP_DIR="${BOT_API_TEMP_DIR:-$APP_DIR/temp_downloads/bot-api}"
+LOG_DIR="${LOG_DIR:-$APP_DIR/logs}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 BOT_API_PID=""
 BOT_PID=""
@@ -38,7 +39,7 @@ if [ -z "${TELEGRAM_API_ID:-}" ] || [ -z "${TELEGRAM_API_HASH:-}" ]; then
   exit 1
 fi
 
-mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR"
+mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 export BOT_API_BASE_URL="http://$BOT_API_HOST:$BOT_API_PORT"
 export BOT_API_IS_LOCAL="true"
@@ -50,7 +51,9 @@ export BOT_API_IS_LOCAL="true"
   --http-ip-address="$BOT_API_HOST" \
   --http-port="$BOT_API_PORT" \
   --dir="$BOT_API_DIR" \
-  --temp-dir="$BOT_API_TEMP_DIR" &
+  --temp-dir="$BOT_API_TEMP_DIR" \
+  --verbosity="${BOT_API_VERBOSITY:-2}" \
+  >"$LOG_DIR/telegram-bot-api.log" 2>&1 &
 BOT_API_PID=$!
 
 cleanup() {

@@ -13,6 +13,8 @@ from aiogram.types import (
     ReplyParameters,
 )
 
+import config
+
 
 class AiogramSyncBotAdapter:
     def __init__(self, bot: Bot, loop: asyncio.AbstractEventLoop):
@@ -42,6 +44,8 @@ class AiogramSyncBotAdapter:
         if isinstance(file_obj, (str, os.PathLike)):
             path = str(file_obj)
             if os.path.exists(path):
+                if config.BOT_API_IS_LOCAL:
+                    return os.path.abspath(path)
                 return FSInputFile(path, filename=filename)
             return path
 
