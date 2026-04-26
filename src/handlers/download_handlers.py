@@ -361,7 +361,7 @@ def register_download_handlers(router: Router, sync_bot):
             try:
                 file_id, info = await asyncio.wait_for(
                     asyncio.to_thread(quick_download),
-                    timeout=15,
+                    timeout=config.INLINE_DOWNLOAD_TIMEOUT,
                 )
             except asyncio.TimeoutError:
                 file_id, info = "timeout", None

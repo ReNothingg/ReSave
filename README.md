@@ -138,6 +138,7 @@ SEND_AS_DOC_LIMIT=2097152000
 MAX_CONCURRENT_DOWNLOADS=1
 MAX_DOWNLOADS_PER_USER=1
 INLINE_DOWNLOAD_ENABLED=false
+INLINE_DOWNLOAD_TIMEOUT=120
 ```
 
 Команда для вкладки Service:
@@ -186,6 +187,7 @@ python main.py
 | `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
 | `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
 | `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
+| `INLINE_DOWNLOAD_ENABLED`, `INLINE_DOWNLOAD_TIMEOUT` | Inline-загрузка и таймаут ожидания результата в секундах |
 | `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
 | `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |

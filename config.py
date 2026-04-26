@@ -88,6 +88,7 @@ class Settings:
     vip_users: tuple[int, ...]
     log_level: str
     inline_download_enabled: bool
+    inline_download_timeout: int
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -118,6 +119,7 @@ def build_settings() -> Settings:
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         inline_download_enabled=_get_bool("INLINE_DOWNLOAD_ENABLED", False),
+        inline_download_timeout=_get_int("INLINE_DOWNLOAD_TIMEOUT", 120, minimum=1),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -164,5 +166,6 @@ ADMIN_IDS = SETTINGS.admin_ids
 VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
 INLINE_DOWNLOAD_ENABLED = SETTINGS.inline_download_enabled
+INLINE_DOWNLOAD_TIMEOUT = SETTINGS.inline_download_timeout
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items
