@@ -39,6 +39,21 @@ logger = logging.getLogger(__name__)
 _download_manager = None
 
 
+INLINE_NETWORK_ERROR_KEYWORDS = (
+    "timeout",
+    "timed out",
+    "ssl",
+    "handshake",
+    "transporterror",
+    "connection",
+    "temporarily unavailable",
+    "try again",
+    "502",
+    "503",
+    "504",
+)
+
+
 def set_download_manager(manager):
     global _download_manager
     _download_manager = manager
@@ -134,6 +149,11 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
 
     rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_{message_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _is_inline_network_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return any(keyword in error_text for keyword in INLINE_NETWORK_ERROR_KEYWORDS)
 
 
 def register_download_handlers(router: Router, sync_bot):
@@ -232,7 +252,9 @@ def register_download_handlers(router: Router, sync_bot):
                         "no_warnings": True,
                         "extract_flat": False,
                         "skip_download": True,
-                        "socket_timeout": 5,
+                        "socket_timeout": 12,
+                        "retries": 2,
+                        "extractor_retries": 2,
                         "cookiefile": config.COOKIES_FILE,
                         "nocheckcertificate": True,
                     }
@@ -254,7 +276,7 @@ def register_download_handlers(router: Router, sync_bot):
                     timestamp = int(time.time())
                     inline_dir = os.path.join(
                         config.TEMP_DIR,
-                        f"inline_{user_id}_{timestamp}",
+                        f"inline_{user_id}_{timestamp}_{uuid4().hex[:8]}",
                     )
                     os.makedirs(inline_dir, exist_ok=True)
                     output_path = os.path.join(inline_dir, "media")
@@ -269,9 +291,9 @@ def register_download_handlers(router: Router, sync_bot):
                         "merge_output_format": "mp4",
                         "http_chunk_size": 10485760,
                         "cookiefile": config.COOKIES_FILE,
-                        "socket_timeout": 10,
-                        "retries": 1,
-                        "fragment_retries": 1,
+                        "socket_timeout": 20,
+                        "retries": 2,
+                        "fragment_retries": 2,
                         "nocheckcertificate": True,
                     }
 
@@ -344,6 +366,8 @@ def register_download_handlers(router: Router, sync_bot):
                                 os.rmdir(inline_dir)
                         except Exception:
                             logger.debug("Не удалось очистить inline-директорию %s", inline_dir)
+                        if _is_inline_network_error(exc):
+                            return "network_error", info
                         return None, None
 
                 except Exception as exc:
@@ -356,6 +380,8 @@ def register_download_handlers(router: Router, sync_bot):
                             os.rmdir(inline_dir)
                     except Exception:
                         logger.debug("Не удалось очистить inline-директорию %s", locals().get("inline_dir"))
+                    if _is_inline_network_error(exc):
+                        return "network_error", None
                     return None, None
 
             try:
@@ -366,7 +392,7 @@ def register_download_handlers(router: Router, sync_bot):
             except asyncio.TimeoutError:
                 file_id, info = "timeout", None
 
-            if file_id and file_id not in {"timeout", "too_long", "too_large", "playlist"}:
+            if file_id and file_id not in {"timeout", "network_error", "too_long", "too_large", "playlist"}:
                 title = info.get("title", "Видео")
                 caption = MessageTemplate.format_inline_caption(title, query_text)
                 result = InlineQueryResultCachedVideo(
@@ -400,6 +426,29 @@ def register_download_handlers(router: Router, sync_bot):
                         message_text=(
                             f'Видео "{title}" еще загружается.\n\n'
                             f"Откройте @ReSafeBot и отправьте ссылку:\n{query_text}"
+                        )
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await bot.answer_inline_query(
+                    inline_query_id=inline_query.id,
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "network_error":
+                result = InlineQueryResultArticle(
+                    id=f"network_{uuid4().hex[:8]}",
+                    title="Не удалось подключиться",
+                    description="TikTok не ответил вовремя, попробуйте еще раз",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            "Не удалось загрузить видео из-за сетевого таймаута.\n\n"
+                            "Попробуйте отправить эту же ссылку еще раз через несколько секунд:\n"
+                            f"{query_text}"
                         )
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
