@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from enum import Enum
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -71,13 +73,39 @@ class UIManager:
         separator = "─" * 40
         return f"{emoji} *{title}* {emoji}\n{separator}\n{content}"
 
+    def format_panel(
+        self,
+        title: str,
+        lines: list[str] | None = None,
+        *,
+        icon: str | None = None,
+        footer: str | None = None,
+    ) -> str:
+        header_icon = f"{icon} " if icon else ""
+        message_lines = [f"{header_icon}{title}", "━━━━━━━━━━━━━━━━━━━━"]
+
+        if lines:
+            message_lines.extend(lines)
+
+        if footer:
+            message_lines.extend(["", footer])
+
+        return "\n".join(message_lines).strip()
+
+    def format_key_value_list(self, items: list[tuple[str, str]]) -> list[str]:
+        lines: list[str] = []
+        for label, value in items:
+            lines.append(f"• {label}: {value}")
+        return lines
+
     def create_progress_bar(
         self,
         progress: float,
-        length: int = 10,
-        filled_char: str = "▰",
-        empty_char: str = "▱",
+        length: int = 12,
+        filled_char: str = "█",
+        empty_char: str = "░",
     ) -> str:
+        progress = max(0.0, min(progress, 1.0))
         filled = int(progress * length)
         percentage = int(progress * 100)
         bar = f"{filled_char * filled}{empty_char * (length - filled)}"
@@ -108,25 +136,23 @@ class UIManager:
         rows = [
             [
                 InlineKeyboardButton(
-                    text=f"{self.emojis['best']} Лучшее качество (авто)",
+                    text=f"{self.emojis['best']} Лучшее",
                     callback_data=f"dl_best_{message_id}",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=f"{self.emojis['medium']} Среднее качество (720p)",
+                    text=f"{self.emojis['medium']} 720p",
                     callback_data=f"dl_medium_{message_id}",
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
-                    text=f"{self.emojis['low']} Низкое качество (480p)",
+                    text=f"{self.emojis['low']} 480p",
                     callback_data=f"dl_low_{message_id}",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text=f"{self.emojis['audio']} Только аудио (MP3)",
+                    text=f"{self.emojis['audio']} MP3",
                     callback_data=f"dl_audio_{message_id}",
                 )
             ],

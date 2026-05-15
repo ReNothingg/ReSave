@@ -9,7 +9,7 @@ class MessageTemplate:
     @staticmethod
     def _format_original_link(url: str) -> str:
         safe_url = escape(str(url), quote=True)
-        return f'👉 <a href="{safe_url}">Оригинал</a>'
+        return f'🔗 <a href="{safe_url}">Открыть оригинал</a>'
 
     @staticmethod
     def format_caption(title: str, url: str, action: str = "video", file_size: Optional[float] = None) -> str:
@@ -25,26 +25,26 @@ class MessageTemplate:
         icon = icons.get(action, "📁")
         
         safe_title = MessageTemplate._escape_text(title)
-        caption = f"{icon} {safe_title}\n\n"
+        caption = f"{icon} <b>{safe_title}</b>\n\n"
         
         if file_size:
-            caption += f"📁 Размер: {file_size:.1f} MB\n"
+            caption += f"📦 Размер: {file_size:.1f} MB\n"
         
         caption += f"{MessageTemplate._format_original_link(url)}\n\n"
         
-        caption += "@ReSafeBot"
+        caption += "⚡ @ReSafeBot"
         
         return caption
     
     @staticmethod
     def format_inline_caption(title: str, url: str) -> str:
         safe_title = MessageTemplate._escape_text(title)
-        return f"🎬 {safe_title}\n\n{MessageTemplate._format_original_link(url)}\n\n@ReSafeBot"
+        return f"🎬 <b>{safe_title}</b>\n\n{MessageTemplate._format_original_link(url)}\n\n⚡ @ReSafeBot"
     
     @staticmethod
     def format_thumbnail_caption(title: str, url: str, width: Optional[int] = None, height: Optional[int] = None) -> str:
         safe_title = MessageTemplate._escape_text(title)
-        caption = f"🖼️ Превью видео (без сжатия)\n"
+        caption = "🖼️ <b>Превью видео</b>\n"
         caption += f"📹 {safe_title}\n"
         
         if width and height:
@@ -52,35 +52,35 @@ class MessageTemplate:
         
         caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
-        caption += "@ReSafeBot"
+        caption += "⚡ @ReSafeBot"
         return caption
     
     @staticmethod
     def format_gif_caption(title: str, url: str) -> str:
         safe_title = MessageTemplate._escape_text(title)
-        return f"✨ {safe_title}\n\n{MessageTemplate._format_original_link(url)}\n\n@ReSafeBot"
+        return f"✨ <b>{safe_title}</b>\n\n{MessageTemplate._format_original_link(url)}\n\n⚡ @ReSafeBot"
     
     @staticmethod
     def format_subtitles_caption(title: str, url: str, language: str = "en/ru") -> str:
         safe_title = MessageTemplate._escape_text(title)
         safe_language = MessageTemplate._escape_text(language)
-        caption = f"📝 Субтитры для: {safe_title}\n"
+        caption = f"📝 <b>Субтитры</b>\n🎬 {safe_title}\n"
         caption += f"🗣️ Языки: {safe_language}\n"
         caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
-        caption += "@ReSafeBot"
+        caption += "⚡ @ReSafeBot"
         return caption
     
     @staticmethod
     def format_tiktok_photo_caption(url: str, count: Optional[int] = None) -> str:
         if count and count > 1:
-            caption = f"🖼️ Фото из TikTok ({count} шт)\n"
+            caption = f"🖼️ <b>Фото из TikTok</b> ({count} шт)\n"
         else:
-            caption = f"🖼️ Фото из TikTok\n"
+            caption = "🖼️ <b>Фото из TikTok</b>\n"
         
         caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
         
-        caption += "@ReSafeBot"
+        caption += "⚡ @ReSafeBot"
         return caption
 
 
@@ -109,7 +109,7 @@ class ErrorMessages:
     QUALITY_NOT_AVAILABLE = "🎯 Для этого видео нет выбранного качества. Попробуйте другое качество."
     
     # Ошибки с лимитами
-    FILE_SIZE_LIMIT = "📦 Файл слишком большой. Спробуйте скачать в более низком качестве (480p, MP3)."
+    FILE_SIZE_LIMIT = "📦 Файл слишком большой. Попробуйте скачать в более низком качестве (480p, MP3)."
     VIDEO_DURATION_LIMIT = "⏱️ Видео слишком длинное. Максимум {max_duration} минут для free-пользователей."
     PLAYLIST_LIMIT = "🎶 Плейлист слишком большой. Максимум {max_items} видео для free-пользователей."
     CONCURRENT_LIMIT = "⏸️ Слишком много одновременных загрузок. Подождите завершения текущих."

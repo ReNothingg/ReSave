@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import config
 from ..core.user_stats import get_stats_manager
+from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ def _build_admin_keyboard() -> InlineKeyboardMarkup:
                     callback_data="admin_user_list",
                 ),
                 InlineKeyboardButton(
-                    text="🗑️ Очистить БД",
+                    text="🧹 Очистить БД",
                     callback_data="admin_clear_db",
                 ),
             ],
@@ -67,6 +68,7 @@ def _build_back_keyboard() -> InlineKeyboardMarkup:
 
 
 def _build_admin_panel_text():
+    ui_manager = get_ui_manager()
     stats_manager = get_stats_manager()
     all_stats = stats_manager.get_all_stats()
 
@@ -77,24 +79,26 @@ def _build_admin_panel_text():
     total_failed = sum(item.failed_downloads for item in all_stats.values())
     total_size = sum(item.total_size_mb for item in all_stats.values())
 
-    return "\n".join(
-        [
-            "Панель администратора",
-            "",
-            f"Активных пользователей: {len(all_stats)}",
-            f"Всего загрузок: {total_downloads}",
-            f"Видео загружено: {total_videos}",
-            f"Аудио загружено: {total_audios}",
-            f"Прочие файлы: {total_other}",
-            f"Ошибок: {total_failed}",
-            f"Общий размер: {total_size:.1f} MB",
-            "",
-            "Выберите действие ниже.",
-        ]
+    return ui_manager.format_panel(
+        "Панель администратора",
+        ui_manager.format_key_value_list(
+            [
+                ("Активных пользователей", str(len(all_stats))),
+                ("Всего загрузок", str(total_downloads)),
+                ("Видео загружено", str(total_videos)),
+                ("Аудио загружено", str(total_audios)),
+                ("Прочие файлы", str(total_other)),
+                ("Ошибок", str(total_failed)),
+                ("Общий размер", f"{total_size:.1f} MB"),
+            ]
+        ),
+        icon="🛠️",
+        footer="Выберите действие ниже.",
     )
 
 
 def _build_global_stats_text():
+    ui_manager = get_ui_manager()
     stats_manager = get_stats_manager()
     all_stats = stats_manager.get_all_stats()
 
@@ -112,23 +116,22 @@ def _build_global_stats_text():
     attempts = total_downloads + total_failed
     success_rate = (total_downloads / attempts * 100) if attempts else 0
 
-    lines = [
-        "Глобальная статистика ReSave",
-        "",
-        f"Пользователей: {total_users}",
-        f"Активных пользователей: {active_users}",
-        f"Всего загрузок: {total_downloads}",
-        f"Видео: {total_videos}",
-        f"Аудио: {total_audios}",
-        f"Прочее: {total_other}",
-        f"Ошибок: {total_failed}",
-        f"Успешность: {success_rate:.1f}%",
-        f"Общий размер: {total_size:.1f} MB",
-        f"Средний размер файла: {avg_size:.2f} MB",
-        f"Среднее число загрузок на пользователя: {avg_downloads:.1f}",
-        "",
-        "Топ-5 пользователей:",
-    ]
+    lines = ui_manager.format_key_value_list(
+        [
+            ("Пользователей", str(total_users)),
+            ("Активных пользователей", str(active_users)),
+            ("Всего загрузок", str(total_downloads)),
+            ("Видео", str(total_videos)),
+            ("Аудио", str(total_audios)),
+            ("Прочее", str(total_other)),
+            ("Ошибок", str(total_failed)),
+            ("Успешность", f"{success_rate:.1f}%"),
+            ("Общий размер", f"{total_size:.1f} MB"),
+            ("Средний размер файла", f"{avg_size:.2f} MB"),
+            ("Среднее число загрузок на пользователя", f"{avg_downloads:.1f}"),
+        ]
+    )
+    lines.extend(["", "Топ-5 пользователей:"])
 
     top_users = sorted(
         all_stats.items(),
@@ -142,10 +145,11 @@ def _build_global_stats_text():
         for index, (user_id, stats) in enumerate(top_users, start=1):
             lines.append(f"{index}. ID {user_id}: {stats.downloads_count} загрузок")
 
-    return "\n".join(lines)
+    return ui_manager.format_panel("Глобальная статистика", lines, icon="📊")
 
 
 def _build_user_list_text():
+    ui_manager = get_ui_manager()
     stats_manager = get_stats_manager()
     all_stats = stats_manager.get_all_stats()
     user_list = sorted(
@@ -154,11 +158,11 @@ def _build_user_list_text():
         reverse=True,
     )
 
-    lines = ["Список пользователей", ""]
+    lines = []
 
     if not user_list:
         lines.append("База пользователей пуста.")
-        return "\n".join(lines)
+        return ui_manager.format_panel("Список пользователей", lines, icon="👥")
 
     for user_id, stats in user_list[:20]:
         lines.extend(
@@ -174,7 +178,7 @@ def _build_user_list_text():
     if len(user_list) > 20:
         lines.append(f"... и еще {len(user_list) - 20} пользователей")
 
-    return "\n".join(lines).strip()
+    return ui_manager.format_panel("Список пользователей", lines, icon="👥")
 
 
 def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
@@ -237,6 +241,7 @@ async def _send_broadcast_payload(bot: Bot, user_id: int, payload: BroadcastPayl
 
 
 def register_admin_handlers(router: Router):
+    ui_manager = get_ui_manager()
     broadcast_cache: dict[int, dict] = {}
 
     async def admin_command(message: Message, state: FSMContext):
@@ -252,8 +257,11 @@ def register_admin_handlers(router: Router):
 
         await state.set_state(BroadcastStates.waiting_for_message)
         await message.reply(
-            "Режим рассылки активирован.\n\n"
-            "Отправьте сообщение, фото, видео, документ или аудио для рассылки."
+            ui_manager.format_panel(
+                "Рассылка",
+                ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
+                icon="📣",
+            )
         )
 
     async def process_broadcast_message(message: Message, state: FSMContext):
@@ -263,8 +271,11 @@ def register_admin_handlers(router: Router):
         payload = _extract_broadcast_payload(message)
         if payload is None:
             await message.reply(
-                "Этот тип сообщения не поддерживается для рассылки. "
-                "Отправьте текст, фото, видео, документ или аудио."
+                ui_manager.format_panel(
+                    "Тип не поддерживается",
+                    ["Отправьте текст, фото, видео, документ или аудио."],
+                    icon="⚠️",
+                )
             )
             return
 
@@ -274,7 +285,13 @@ def register_admin_handlers(router: Router):
 
         if not user_ids:
             await state.clear()
-            await message.reply("Нет пользователей для рассылки.")
+            await message.reply(
+                ui_manager.format_panel(
+                    "Рассылка недоступна",
+                    ["Нет пользователей для рассылки."],
+                    icon="📣",
+                )
+            )
             return
 
         broadcast_cache[message.from_user.id] = {
@@ -300,7 +317,15 @@ def register_admin_handlers(router: Router):
         )
 
         await message.reply(
-            f"Подтверждение рассылки\n\nСообщение будет отправлено {len(user_ids)} пользователям.\n\nПродолжить?",
+            ui_manager.format_panel(
+                "Подтверждение рассылки",
+                [
+                    f"Получателей: {len(user_ids)}",
+                    "",
+                    "Продолжить?",
+                ],
+                icon="📣",
+            ),
             reply_markup=keyboard,
         )
 
@@ -327,8 +352,11 @@ def register_admin_handlers(router: Router):
         await state.set_state(BroadcastStates.waiting_for_message)
         await call.answer()
         await call.message.edit_text(
-            "Режим рассылки активирован.\n\n"
-            "Отправьте сообщение, фото, видео, документ или аудио для рассылки.",
+            ui_manager.format_panel(
+                "Рассылка",
+                ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
+                icon="📣",
+            ),
             reply_markup=_build_back_keyboard(),
         )
 
@@ -348,7 +376,14 @@ def register_admin_handlers(router: Router):
 
         await call.answer()
         await call.message.edit_text(
-            "Внимание.\n\nВы уверены, что хотите очистить всю статистику?\nЭто действие необратимо.",
+            ui_manager.format_panel(
+                "Очистка статистики",
+                [
+                    "Вы уверены, что хотите очистить всю статистику?",
+                    "Это действие необратимо.",
+                ],
+                icon="⚠️",
+            ),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -374,7 +409,11 @@ def register_admin_handlers(router: Router):
 
         await call.answer("Статистика очищена.")
         await call.message.edit_text(
-            "База статистики успешно очищена.",
+            ui_manager.format_panel(
+                "Статистика очищена",
+                ["База статистики успешно очищена."],
+                icon="✅",
+            ),
             reply_markup=_build_back_keyboard(),
         )
 
@@ -394,7 +433,11 @@ def register_admin_handlers(router: Router):
         total_users: int = data["total"]
 
         await call.message.edit_text(
-            f"Рассылка начата...\n\nОтправлено: 0/{total_users}\nОшибок: 0"
+            ui_manager.format_panel(
+                "Рассылка начата",
+                [f"Отправлено: 0/{total_users}", "Ошибок: 0"],
+                icon="📣",
+            )
         )
 
         sent = 0
@@ -411,9 +454,14 @@ def register_admin_handlers(router: Router):
             if index % 10 == 0 or index == total_users:
                 try:
                     await call.message.edit_text(
-                        "Рассылка в процессе...\n\n"
-                        f"Отправлено: {sent}/{total_users}\n"
-                        f"Ошибок: {failed}"
+                        ui_manager.format_panel(
+                            "Рассылка в процессе",
+                            [
+                                f"Отправлено: {sent}/{total_users}",
+                                f"Ошибок: {failed}",
+                            ],
+                            icon="📣",
+                        )
                     )
                 except Exception:
                     logger.debug("Не удалось обновить прогресс рассылки")
@@ -421,9 +469,14 @@ def register_admin_handlers(router: Router):
         broadcast_cache.pop(call.from_user.id, None)
 
         await call.message.edit_text(
-            "Рассылка завершена.\n\n"
-            f"Успешно отправлено: {sent}/{total_users}\n"
-            f"Ошибок: {failed}",
+            ui_manager.format_panel(
+                "Рассылка завершена",
+                [
+                    f"Успешно отправлено: {sent}/{total_users}",
+                    f"Ошибок: {failed}",
+                ],
+                icon="✅",
+            ),
             reply_markup=_build_back_keyboard(),
         )
 
@@ -435,7 +488,7 @@ def register_admin_handlers(router: Router):
         broadcast_cache.pop(call.from_user.id, None)
         await call.answer("Рассылка отменена.")
         await call.message.edit_text(
-            "Рассылка отменена.",
+            ui_manager.format_panel("Рассылка отменена", icon="✕"),
             reply_markup=_build_back_keyboard(),
         )
 

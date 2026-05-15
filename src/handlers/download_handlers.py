@@ -32,6 +32,7 @@ from .download_processing import (
     handle_group_download as _handle_group_download,
 )
 from ..utils.message_templates import ErrorMessages, MessageTemplate
+from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,16 @@ def get_download_manager():
 
 
 def _build_download_limit_text(chat_id: int) -> str:
+    ui_manager = get_ui_manager()
     active_downloads = _download_manager.get_user_task_count(chat_id) if _download_manager else 0
-    return (
-        f"{ErrorMessages.CONCURRENT_LIMIT}\n\n"
-        f"Активных загрузок: {active_downloads}/{config.MAX_DOWNLOADS_PER_USER}"
+    return ui_manager.format_panel(
+        "Лимит активных загрузок",
+        [
+            ErrorMessages.CONCURRENT_LIMIT,
+            "",
+            f"Активных загрузок: {active_downloads}/{config.MAX_DOWNLOADS_PER_USER}",
+        ],
+        icon="⏸️",
     )
 
 
@@ -75,25 +82,23 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
-                text="🎬 Лучшее качество (авто)",
+                text="🎬 Лучшее",
                 callback_data=f"dl_best_{message_id}",
             )
         ],
         [
             InlineKeyboardButton(
-                text="📹 Среднее качество (720p)",
+                text="📹 720p",
                 callback_data=f"dl_medium_{message_id}",
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
-                text="📱 Низкое качество (480p)",
+                text="📱 480p",
                 callback_data=f"dl_low_{message_id}",
             )
         ],
         [
             InlineKeyboardButton(
-                text="🎵 Только аудио (MP3)",
+                text="🎵 MP3",
                 callback_data=f"dl_audio_{message_id}",
             )
         ],
@@ -104,7 +109,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="✨ Создать GIF",
+                    text="✨ GIF",
                     callback_data=f"dl_gif_{message_id}",
                 )
             ]
@@ -116,7 +121,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="📝 Скачать субтитры (.srt)",
+                    text="📝 Субтитры",
                     callback_data=f"dl_subtitles_{message_id}",
                 )
             ]
@@ -126,7 +131,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="🖼️ Скачать превью",
+                    text="🖼️ Превью",
                     callback_data=f"dl_thumbnail_{message_id}",
                 )
             ]
@@ -136,7 +141,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
     for height in sorted(resolutions.keys(), reverse=True)[:3]:
         fmt_info = resolutions[height]
         size_bytes = fmt_info.get("filesize") or 0
-        size_suffix = f" (~{size_bytes / (1024 * 1024):.1f}MB)" if size_bytes else ""
+        size_suffix = f" · {size_bytes / (1024 * 1024):.1f}MB" if size_bytes else ""
         resolution_buttons.append(
             InlineKeyboardButton(
                 text=f"🎥 {height}p{size_suffix}",
@@ -147,7 +152,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
     if resolution_buttons:
         rows.append(resolution_buttons)
 
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_{message_id}")])
+    rows.append([InlineKeyboardButton(text="✕ Отмена", callback_data=f"cancel_{message_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -157,6 +162,7 @@ def _is_inline_network_error(exc: Exception) -> bool:
 
 
 def register_download_handlers(router: Router, sync_bot):
+    ui_manager = get_ui_manager()
     video_info_cache: dict[int, dict] = {}
     inline_queries: dict[str, InlineQueryCacheItem] = {}
     inline_cache_lock = threading.Lock()
@@ -172,12 +178,14 @@ def register_download_handlers(router: Router, sync_bot):
                     title="ReSave - скачать видео",
                     description="Введите ссылку после @ReSafeBot",
                     input_message_content=InputTextMessageContent(
-                        message_text=(
-                            "ReSave поможет скачать видео быстро и просто.\n\n"
-                            "1. Введите @ReSafeBot\n"
-                            "2. Вставьте ссылку на видео\n"
-                            "3. Подождите загрузки\n"
-                            "4. Отправьте результат в чат"
+                        message_text=ui_manager.format_panel(
+                            "ReSave inline",
+                            [
+                                "Введите ссылку после @ReSafeBot.",
+                                "",
+                                "Я подготовлю видео и покажу результат прямо здесь.",
+                            ],
+                            icon="⚡",
                         )
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
@@ -207,7 +215,8 @@ def register_download_handlers(router: Router, sync_bot):
                         video_file_id=cached_item.file_id,
                         title=title,
                         description="Готово к отправке из кэша",
-                        caption=f"{title}\n\n@ReSafeBot",
+                        caption=MessageTemplate.format_inline_caption(title, query_text),
+                        parse_mode="HTML",
                     )
                     await bot.answer_inline_query(
                         inline_query_id=inline_query.id,
@@ -219,7 +228,7 @@ def register_download_handlers(router: Router, sync_bot):
 
             if not config.INLINE_DOWNLOAD_ENABLED:
                 open_bot_button = InlineQueryResultsButton(
-                    text="Open ReSave",
+                    text="Открыть ReSave",
                     start_parameter="start",
                 )
                 result = InlineQueryResultArticle(
@@ -228,7 +237,8 @@ def register_download_handlers(router: Router, sync_bot):
                     description="Большие файлы скачиваются напрямую в боте",
                     input_message_content=InputTextMessageContent(
                         message_text=(
-                            "Для больших файлов откройте @ReSafeBot и отправьте ссылку:\n"
+                            "📦 Большие файлы лучше скачивать напрямую в боте.\n\n"
+                            "Откройте @ReSafeBot и отправьте ссылку:\n"
                             f"{query_text}"
                         )
                     ),
@@ -399,7 +409,7 @@ def register_download_handlers(router: Router, sync_bot):
                     id=f"video_{uuid4().hex[:8]}",
                     video_file_id=file_id,
                     title=title,
-                    description="720p Ready to send",
+                    description="720p · готово к отправке",
                     caption=caption,
                     parse_mode="HTML",
                 )
@@ -412,7 +422,7 @@ def register_download_handlers(router: Router, sync_bot):
                 return
 
             open_bot_button = InlineQueryResultsButton(
-                text="Open ReSave",
+                text="Открыть ReSave",
                 start_parameter="start",
             )
 
@@ -533,8 +543,8 @@ def register_download_handlers(router: Router, sync_bot):
 
             result = InlineQueryResultArticle(
                 id=f"error_{uuid4().hex[:8]}",
-                title="Error loading",
-                description="Check link or use bot directly",
+                title="Не удалось загрузить",
+                description="Проверьте ссылку или откройте бота",
                 input_message_content=InputTextMessageContent(
                     message_text=(
                         "Не удалось загрузить видео.\n\n"
@@ -575,19 +585,28 @@ def register_download_handlers(router: Router, sync_bot):
             if message.chat.type == "private":
                 suggestions = url_validator.suggest_fixes(text)
                 if suggestions:
-                    suggestion_lines = ["Может быть, вы имели в виду?", ""]
+                    suggestion_lines = ["Возможно, подойдет один из вариантов:", ""]
                     for suggestion in suggestions:
                         suggestion_lines.append(f"• {suggestion['reason']}")
                         suggestion_lines.append(suggestion["url"])
                         suggestion_lines.append("")
                     await message.reply(
-                        "❌ Это не похоже на ссылку\n\n" + "\n".join(suggestion_lines).strip()
+                        ui_manager.format_panel(
+                            "Ссылка не распознана",
+                            suggestion_lines,
+                            icon="🔗",
+                        )
                     )
                 else:
                     await message.reply(
-                        "❌ Не удается распознать ссылку\n\n"
-                        "Убедитесь, что ссылка полная, начинается с http:// или https:// "
-                        "и не содержит лишних пробелов."
+                        ui_manager.format_panel(
+                            "Ссылка не распознана",
+                            [
+                                "Пришлите полный URL, который начинается с http:// или https://.",
+                                "Проверьте, что в ссылке нет лишних пробелов.",
+                            ],
+                            icon="🔗",
+                        )
                     )
             return
 
@@ -608,12 +627,19 @@ def register_download_handlers(router: Router, sync_bot):
         if metadata.get("fixed"):
             logger.info("Ссылка исправлена: %s", metadata.get("fix_type"))
             status_message = await message.reply(
-                "✅ Ссылка исправлена\n\n"
-                "🔍 Ищу информацию о видео... Подождите секунду."
+                ui_manager.format_panel(
+                    "Ссылка исправлена",
+                    ["Ищу информацию о видео. Обычно это занимает несколько секунд."],
+                    icon="✅",
+                )
             )
         else:
             status_message = await message.reply(
-                "🔍 Ищу информацию о видео... Подождите секунду."
+                ui_manager.format_panel(
+                    "Ищу видео",
+                    ["Проверяю ссылку и доступные форматы."],
+                    icon="🔍",
+                )
             )
 
         asyncio.create_task(
@@ -646,8 +672,14 @@ def register_download_handlers(router: Router, sync_bot):
             await call.message.edit_text(_build_download_limit_text(call.message.chat.id))
             return
 
-        await call.answer("✅ Начинаю скачивание.")
-        await call.message.edit_text("📥 Добавляю в очередь...")
+        await call.answer("Начинаю скачивание.")
+        await call.message.edit_text(
+            ui_manager.format_panel(
+                "Добавляю в очередь",
+                ["Загрузка начнется автоматически."],
+                icon="📥",
+            )
+        )
 
         format_param = int(parts[2]) if action == "res" else None
         url = download_info["url"]
@@ -693,7 +725,11 @@ def register_download_handlers(router: Router, sync_bot):
 
         await call.answer(f"Отменено {cancelled_count} загрузок.")
         await call.message.edit_text(
-            f"✅ Отменено {cancelled_count} загрузок. Готов к новым задачам."
+            ui_manager.format_panel(
+                "Загрузки отменены",
+                [f"Отменено: {cancelled_count}", "Можно отправить новую ссылку."],
+                icon="✅",
+            )
         )
 
     async def handle_cancel(call: CallbackQuery):
@@ -704,7 +740,9 @@ def register_download_handlers(router: Router, sync_bot):
         try:
             await call.message.delete()
         except Exception:
-            await call.message.edit_text("❌ Запрос отменен.")
+            await call.message.edit_text(
+                ui_manager.format_panel("Запрос отменен", icon="✕")
+            )
 
     router.inline_query.register(inline_query_handler)
     router.message.register(

@@ -8,6 +8,7 @@ from ..core.access import (
     build_playlist_limit_error,
     collect_playlist_entries,
 )
+from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +46,18 @@ def queue_playlist_downloads(
 
 
 def build_playlist_queued_text(info: dict, queued_count: int) -> str:
+    ui_manager = get_ui_manager()
     playlist_title = info.get("title") or "Плейлист"
-    return (
-        "🎶 Плейлист поставлен в очередь.\n\n"
-        f"Название: {playlist_title}\n"
-        f"Видео в очереди: {queued_count}\n"
-        "Качество: среднее (720p)\n\n"
-        "Файлы будут приходить по мере готовности."
+    return ui_manager.format_panel(
+        "Плейлист в очереди",
+        [
+            f"Название: {playlist_title}",
+            f"Видео в очереди: {queued_count}",
+            "Качество: 720p",
+            "",
+            "Файлы будут приходить по мере готовности.",
+        ],
+        icon="🎶",
     )
 
 
@@ -121,6 +127,7 @@ def extract_video_info(
     build_download_limit_text,
     build_download_markup,
 ):
+    ui_manager = get_ui_manager()
     try:
         from ..core.video_info import fetch_video_info
 
@@ -134,7 +141,11 @@ def extract_video_info(
                 return
 
             bot.edit_message_text(
-                "🖼️ Обнаружено TikTok фото. Начинаю скачивание...",
+                ui_manager.format_panel(
+                    "TikTok фото",
+                    ["Пост распознан. Добавляю фото в очередь."],
+                    icon="🖼️",
+                ),
                 chat_id,
                 status_message_id,
             )
@@ -159,7 +170,11 @@ def extract_video_info(
         info = fetch_video_info(url)
         if not info:
             bot.edit_message_text(
-                "❌ Не удалось получить информацию о видео.",
+                ui_manager.format_panel(
+                    "Не удалось прочитать ссылку",
+                    ["Проверьте доступность видео и отправьте ссылку еще раз."],
+                    icon="❌",
+                ),
                 chat_id,
                 status_message_id,
             )
@@ -233,7 +248,7 @@ def extract_video_info(
         }
 
         markup = build_download_markup(user_message_id, info, resolutions)
-        lines = [f"📹 {info.get('title', 'video')}"]
+        lines = [f"🎬 {info.get('title', 'video')}"]
 
         if info.get("uploader"):
             lines.append(f"👤 {info['uploader']}")
@@ -242,9 +257,9 @@ def extract_video_info(
             minutes, seconds = divmod(int(info["duration"]), 60)
             lines.append(f"⏱️ {minutes:02d}:{seconds:02d}")
 
-        lines.extend(["", "Выберите качество для скачивания:"])
+        lines.extend(["", "Выберите формат ниже."])
         bot.edit_message_text(
-            "\n".join(lines),
+            ui_manager.format_panel("Видео найдено", lines, icon="✅"),
             chat_id,
             status_message_id,
             reply_markup=markup,
@@ -256,7 +271,11 @@ def extract_video_info(
         elif "Private video" in error_message:
             user_text = "❌ Это приватное видео."
         else:
-            user_text = f"❌ Ошибка: {error_message}"
+            user_text = ui_manager.format_panel(
+                "Ошибка обработки",
+                [error_message],
+                icon="❌",
+            )
 
         bot.edit_message_text(user_text, chat_id, status_message_id)
         logger.error("Ошибка при получении информации о видео %s: %s", url, exc)

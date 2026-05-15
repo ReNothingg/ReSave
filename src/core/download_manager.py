@@ -5,6 +5,7 @@ import time
 
 import config
 from .models import DownloadTask
+from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,8 @@ class DownloadManager:
                 for task_id, task in active_tasks.items():
                     try:
                         if task.progress > 0 and task.progress < 1.0:
-                            progress_bar = self._generate_progress_bar(task.progress)
+                            ui_manager = get_ui_manager()
+                            progress_bar = ui_manager.create_progress_bar(task.progress)
 
                             if task.started_at and task.progress > 0.05:
                                 elapsed = time.time() - task.started_at
@@ -180,8 +182,16 @@ class DownloadManager:
                                 remaining_str = ""
 
                             self.bot.edit_message_text(
-                                f"⏬ Скачивание в процессе: {int(task.progress * 100)}%\n"
-                                f"{progress_bar}{remaining_str}\n\n💬 Скоро будет готово!",
+                                ui_manager.format_panel(
+                                    "Скачивание",
+                                    [
+                                        f"⬇️ {progress_bar}",
+                                        f"⏱️ {remaining_str}" if remaining_str else "⏱️ Время уточняется",
+                                        "",
+                                        "Файл будет отправлен сразу после обработки.",
+                                    ],
+                                    icon="📦",
+                                ),
                                 task.chat_id,
                                 task.message_id,
                             )
