@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import config
 from aiogram import Bot, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -79,30 +80,42 @@ def _build_download_limit_text(chat_id: int) -> str:
 
 
 def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, dict]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                text="🎬 Лучшее",
-                callback_data=f"dl_best_{message_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="📹 720p",
-                callback_data=f"dl_medium_{message_id}",
-            ),
-            InlineKeyboardButton(
-                text="📱 480p",
-                callback_data=f"dl_low_{message_id}",
-            )
-        ],
+    rows: list[list[InlineKeyboardButton]] = []
+
+    youtube_resolutions = _youtube_resolution_buttons(message_id, info, resolutions)
+    if youtube_resolutions:
+        rows.extend(youtube_resolutions)
+    else:
+        rows.extend(
+            [
+                [
+                    InlineKeyboardButton(
+                        text="🎬 Максимум",
+                        callback_data=f"dl_best_{message_id}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📹 720p",
+                        callback_data=f"dl_medium_{message_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="📱 480p",
+                        callback_data=f"dl_low_{message_id}",
+                    )
+                ],
+            ]
+        )
+
+    rows.append(
         [
             InlineKeyboardButton(
                 text="🎵 MP3",
                 callback_data=f"dl_audio_{message_id}",
+                style="primary",
             )
-        ],
-    ]
+        ]
+    )
 
     duration = info.get("duration")
     if duration and duration <= 30:
@@ -123,6 +136,7 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
                 InlineKeyboardButton(
                     text="📝 Субтитры",
                     callback_data=f"dl_subtitles_{message_id}",
+                    style="primary",
                 )
             ]
         )
@@ -133,32 +147,63 @@ def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, d
                 InlineKeyboardButton(
                     text="🖼️ Превью",
                     callback_data=f"dl_thumbnail_{message_id}",
+                    style="success",
                 )
             ]
         )
 
-    resolution_buttons: list[InlineKeyboardButton] = []
-    for height in sorted(resolutions.keys(), reverse=True)[:3]:
-        fmt_info = resolutions[height]
-        size_bytes = fmt_info.get("filesize") or 0
-        size_suffix = f" · {size_bytes / (1024 * 1024):.1f}MB" if size_bytes else ""
-        resolution_buttons.append(
-            InlineKeyboardButton(
-                text=f"🎥 {height}p{size_suffix}",
-                callback_data=f"dl_res_{height}_{message_id}",
-            )
+    rows.append([
+        InlineKeyboardButton(
+            text="✕ Отмена",
+            callback_data=f"cancel_{message_id}",
+            style="danger",
         )
-
-    if resolution_buttons:
-        rows.append(resolution_buttons)
-
-    rows.append([InlineKeyboardButton(text="✕ Отмена", callback_data=f"cancel_{message_id}")])
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _youtube_resolution_buttons(
+    message_id: int,
+    info: dict,
+    resolutions: dict[int, dict],
+) -> list[list[InlineKeyboardButton]]:
+    webpage_url = (info.get("webpage_url") or info.get("original_url") or "").lower()
+    extractor = (info.get("extractor_key") or info.get("extractor") or "").lower()
+    is_youtube = "youtube" in extractor or "youtu.be" in webpage_url or "youtube.com" in webpage_url
+    if not is_youtube or not resolutions:
+        return []
+
+    preferred_order = [4320, 2160, 1440, 1080, 720, 480, 360]
+    available = [height for height in preferred_order if height in resolutions]
+    extra = [height for height in sorted(resolutions.keys(), reverse=True) if height not in available]
+    heights = (available + extra)[:6]
+
+    buttons = [
+        InlineKeyboardButton(
+            text=f"🎥 {height}p",
+            callback_data=f"dl_res_{height}_{message_id}",
+        )
+        for height in heights
+    ]
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(0, len(buttons), 2):
+        rows.append(buttons[index:index + 2])
+    return rows
 
 
 def _is_inline_network_error(exc: Exception) -> bool:
     error_text = str(exc).lower()
     return any(keyword in error_text for keyword in INLINE_NETWORK_ERROR_KEYWORDS)
+
+
+def _is_expired_inline_query_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return (
+        "query is too old" in error_text
+        or "response timeout expired" in error_text
+        or "query id is invalid" in error_text
+    )
 
 
 def register_download_handlers(router: Router, sync_bot):
@@ -170,6 +215,16 @@ def register_download_handlers(router: Router, sync_bot):
     async def inline_query_handler(inline_query: InlineQuery, bot: Bot):
         query_text = (inline_query.query or "").strip()
         user_id = inline_query.from_user.id
+
+        async def answer_inline_query(**kwargs) -> bool:
+            try:
+                await bot.answer_inline_query(inline_query_id=inline_query.id, **kwargs)
+                return True
+            except TelegramBadRequest as exc:
+                if _is_expired_inline_query_error(exc):
+                    logger.warning("Inline query expired before answer: %s", exc)
+                    return False
+                raise
 
         try:
             if not query_text:
@@ -190,8 +245,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -199,13 +253,25 @@ def register_download_handlers(router: Router, sync_bot):
                 return
 
             if not query_text.startswith(("http://", "https://")):
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[],
                     cache_time=1,
                     is_personal=True,
                 )
                 return
+
+            from ..utils.url_validator import get_url_validator
+
+            url_validator = get_url_validator()
+            is_valid, corrected_url, _ = url_validator.validate(query_text)
+            if not is_valid:
+                await answer_inline_query(
+                    results=[],
+                    cache_time=1,
+                    is_personal=True,
+                )
+                return
+            query_text = corrected_url or query_text
 
             for cached_item in inline_queries.values():
                 if cached_item.url == query_text and cached_item.status == "ready" and cached_item.file_id:
@@ -218,8 +284,7 @@ def register_download_handlers(router: Router, sync_bot):
                         caption=MessageTemplate.format_inline_caption(title, query_text),
                         parse_mode="HTML",
                     )
-                    await bot.answer_inline_query(
-                        inline_query_id=inline_query.id,
+                    await answer_inline_query(
                         results=[result],
                         cache_time=300,
                         is_personal=True,
@@ -244,8 +309,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -257,6 +321,9 @@ def register_download_handlers(router: Router, sync_bot):
                 import yt_dlp
 
                 try:
+                    if "tiktok.com" in query_text and "/photo/" in query_text:
+                        return "tiktok_photo", None
+
                     ydl_opts = {
                         "quiet": True,
                         "no_warnings": True,
@@ -402,7 +469,14 @@ def register_download_handlers(router: Router, sync_bot):
             except asyncio.TimeoutError:
                 file_id, info = "timeout", None
 
-            if file_id and file_id not in {"timeout", "network_error", "too_long", "too_large", "playlist"}:
+            if file_id and file_id not in {
+                "timeout",
+                "network_error",
+                "too_long",
+                "too_large",
+                "playlist",
+                "tiktok_photo",
+            }:
                 title = info.get("title", "Видео")
                 caption = MessageTemplate.format_inline_caption(title, query_text)
                 result = InlineQueryResultCachedVideo(
@@ -413,8 +487,7 @@ def register_download_handlers(router: Router, sync_bot):
                     caption=caption,
                     parse_mode="HTML",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=300,
                     is_personal=True,
@@ -440,8 +513,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -463,8 +535,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -486,8 +557,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -509,8 +579,7 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -532,8 +601,28 @@ def register_download_handlers(router: Router, sync_bot):
                     ),
                     thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
                 )
-                await bot.answer_inline_query(
-                    inline_query_id=inline_query.id,
+                await answer_inline_query(
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "tiktok_photo":
+                result = InlineQueryResultArticle(
+                    id=f"tiktok_photo_{uuid4().hex[:8]}",
+                    title="TikTok фото откройте в боте",
+                    description="Inline-режим не отправляет фото-посты",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            "TikTok фото-пост лучше скачать напрямую в @ReSafeBot.\n\n"
+                            f"Отправьте эту ссылку боту:\n{query_text}"
+                        )
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
@@ -553,8 +642,7 @@ def register_download_handlers(router: Router, sync_bot):
                 ),
                 thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
             )
-            await bot.answer_inline_query(
-                inline_query_id=inline_query.id,
+            await answer_inline_query(
                 results=[result],
                 cache_time=1,
                 is_personal=True,
@@ -562,8 +650,7 @@ def register_download_handlers(router: Router, sync_bot):
             )
         except Exception as exc:
             logger.exception("Critical inline error: %s", exc)
-            await bot.answer_inline_query(
-                inline_query_id=inline_query.id,
+            await answer_inline_query(
                 results=[],
                 cache_time=1,
                 is_personal=True,
@@ -580,10 +667,11 @@ def register_download_handlers(router: Router, sync_bot):
             return
 
         url_validator = get_url_validator()
-        is_valid, corrected_url, metadata = url_validator.validate(text)
+        extracted_url = url_validator.extract_url(text)
+        is_valid, corrected_url, metadata = url_validator.validate(extracted_url or "")
         if not is_valid:
             if message.chat.type == "private":
-                suggestions = url_validator.suggest_fixes(text)
+                suggestions = url_validator.suggest_fixes(extracted_url or text)
                 if suggestions:
                     suggestion_lines = ["Возможно, подойдет один из вариантов:", ""]
                     for suggestion in suggestions:
@@ -610,7 +698,7 @@ def register_download_handlers(router: Router, sync_bot):
                     )
             return
 
-        url = corrected_url or text
+        url = corrected_url or extracted_url
 
         if message.chat.type in {"group", "supergroup"}:
             logger.info("Получена ссылка в группе %s: %s", message.chat.id, url)

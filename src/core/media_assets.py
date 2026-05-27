@@ -26,6 +26,13 @@ from .download_support import (
 logger = logging.getLogger(__name__)
 
 
+def _ffmpeg_location() -> str | None:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return None
+    return str(Path(ffmpeg_path).parent)
+
+
 def convert_to_gif_and_send(task, video_path, bot):
     gif_path = Path(video_path).with_suffix(".gif")
     temp_mp4 = None
@@ -142,8 +149,9 @@ def download_and_send_subtitles(task, bot, temp_dir):
             "cookiefile": config.COOKIES_FILE,
         }
 
-        if shutil.which("ffmpeg"):
-            ydl_params["ffmpeg_location"] = shutil.which("ffmpeg")
+        ffmpeg_location = _ffmpeg_location()
+        if ffmpeg_location:
+            ydl_params["ffmpeg_location"] = ffmpeg_location
 
         from ..utils.retry_manager import SUBTITLE_RETRY_CONFIG, get_smart_retry_manager
 
@@ -487,15 +495,15 @@ def download_and_send_thumbnail(task, bot, temp_dir):
                 task.message_id,
             )
 
-        with open(file_path, "rb") as file_obj:
-            bot.send_document(
-                task.chat_id,
-                file_obj,
-                caption=MessageTemplate.format_thumbnail_caption(title, task.url),
-                visible_file_name=file_name,
-                reply_to_message_id=task.reply_to_id,
-                parse_mode="HTML",
-            )
+        bot.send_document(
+            task.chat_id,
+            file_path,
+            caption=MessageTemplate.format_thumbnail_caption(title, task.url),
+            visible_file_name=file_name,
+            reply_to_message_id=task.reply_to_id,
+            parse_mode="HTML",
+            timeout=120,
+        )
 
         record_download_success(
             task.chat_id,

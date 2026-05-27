@@ -162,9 +162,12 @@ class ErrorMessages:
             ("failed to establish a new connection", ErrorMessages.NETWORK_ERROR),
             ("winerror 10061", ErrorMessages.NETWORK_ERROR),
             ("timed out", ErrorMessages.DOWNLOAD_TIMEOUT),
+            ("failed to decode object", ErrorMessages.UPLOAD_FAILED),
+            ("clientdecodeerror", ErrorMessages.UPLOAD_FAILED),
             
             ("subtitles", ErrorMessages.SUBTITLES_NOT_FOUND),
             ("thumbnail", ErrorMessages.THUMBNAIL_NOT_FOUND),
+            ("превью", ErrorMessages.THUMBNAIL_DOWNLOAD_FAILED),
             
             ("tiktok", ErrorMessages.TIKTOK_DOWNLOAD_FAILED),
             ("gif", ErrorMessages.GIF_CONVERSION_FAILED),

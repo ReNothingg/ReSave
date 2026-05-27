@@ -1,6 +1,7 @@
 import re
 import logging
 from typing import Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -25,33 +26,60 @@ class URLValidator:
             r"^https?://",
             re.IGNORECASE
         )
+        self.http_url_finder = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
     def validate(self, url: str) -> Tuple[bool, str, dict]:
         if not url or not isinstance(url, str):
             return False, None, {"error": "Пустая ссылка"}
 
-        url = url.strip()
+        url = self._clean_url(url.strip())
+        if not url:
+            return False, None, {"error": "Пустая ссылка"}
 
         if not self.url_pattern.match(url):
+            if any(char.isspace() for char in url):
+                return False, None, {"error": "Ссылка содержит пробелы"}
+
             corrected = f"https://{url}"
 
             if self._looks_like_url(corrected):
-                logger.info(f"Ссылка исправлена: добавлен https:// к {url}")
+                platform = self._detect_platform(corrected)
+                if platform == "unknown":
+                    return False, None, {"error": "Платформа не поддерживается"}
+
+                logger.info("Ссылка исправлена: добавлен https:// к %s", url)
                 return True, corrected, {
                     "fixed": True,
                     "fix_type": "added_protocol",
-                    "original": url
+                    "original": url,
+                    "platform": platform,
                 }
 
         if not self._looks_like_url(url):
             return False, None, {"error": "Это не похоже на ссылку"}
 
         platform = self._detect_platform(url)
+        if platform == "unknown":
+            return False, None, {"error": "Платформа не поддерживается"}
 
         return True, url, {
             "platform": platform,
             "valid": True
         }
+
+    def extract_url(self, text: str) -> str | None:
+        if not text or not isinstance(text, str):
+            return None
+
+        match = self.http_url_finder.search(text)
+        if match:
+            return self._clean_url(match.group(0))
+
+        stripped = text.strip()
+        if any(char.isspace() for char in stripped):
+            return None
+
+        return self._clean_url(stripped)
 
     def fix_common_mistakes(self, url: str) -> str:
         url = url.strip()
@@ -83,19 +111,50 @@ class URLValidator:
         return is_valid
 
     def _looks_like_url(self, url: str) -> bool:
-        # Должна быть точка и косые черты
-        if "." not in url or "//" not in url:
+        if any(char.isspace() for char in url):
             return False
 
-        # Должна начинаться с http
-        if not url.lower().startswith("http"):
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
             return False
 
-        # Не должна содержать недопустимые символы в начале ссылки
-        if any(c in url[:20] for c in [" ", "\n", "\r", "\t"]):
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+
+        host = parsed.hostname
+        if not host or "." not in host:
+            return False
+
+        if host.startswith(".") or host.endswith(".") or ".." in host:
+            return False
+
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return False
+
+        labels = ascii_host.split(".")
+        if any(not label or len(label) > 63 for label in labels):
+            return False
+
+        if not re.fullmatch(r"[a-z0-9.-]+", ascii_host, re.IGNORECASE):
             return False
 
         return True
+
+    @staticmethod
+    def _clean_url(url: str) -> str:
+        url = url.strip()
+        url = url.rstrip(".,;:!?)»”’]")
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return url
+
+        if parsed.scheme and parsed.netloc:
+            return urlunsplit(parsed)
+        return url
 
     def _detect_platform(self, url: str) -> str:
         url_lower = url.lower()

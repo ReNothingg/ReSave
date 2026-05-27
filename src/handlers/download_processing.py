@@ -65,6 +65,18 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
     try:
         import yt_dlp
 
+        if "tiktok.com" in url and "/photo/" in url:
+            download_manager.add_task(
+                url=url,
+                chat_id=chat_id,
+                message_id=message_id,
+                info={"title": "TikTok Photo"},
+                action="tiktok_photo",
+                reply_to_id=message_id,
+                silent_mode=True,
+            )
+            return
+
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,

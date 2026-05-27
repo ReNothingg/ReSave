@@ -134,6 +134,10 @@ class RetryManager:
 
         error_str = str(exception).lower()
 
+        if "загрузка отменена пользователем" in error_str or "cancelled" in error_str:
+            logger.debug("Отмененную пользователем операцию не повторяем: %s", exception)
+            return False
+
 
         permanent_errors = [
             "404",

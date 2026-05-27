@@ -35,13 +35,21 @@ class UnicodeStreamHandler(logging.StreamHandler):
             self.stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 
+class SkipInfoFilter(logging.Filter):
+    def filter(self, record):
+        return record.levelno != logging.INFO
+
+
+_file_handler = logging.FileHandler("bot.log", encoding="utf-8")
+_stream_handler = UnicodeStreamHandler()
+for _handler in (_file_handler, _stream_handler):
+    _handler.addFilter(SkipInfoFilter())
+
+
 logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        UnicodeStreamHandler(),
-    ],
+    handlers=[_file_handler, _stream_handler],
 )
 logger = logging.getLogger(__name__)
 

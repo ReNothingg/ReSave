@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -14,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 def register_command_handlers(router: Router):
     ui_manager = get_ui_manager()
+
+    async def safe_reply(message: Message, text: str, **kwargs):
+        try:
+            return await message.reply(text, **kwargs)
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning("Не удалось ответить на команду в чате %s: %s", message.chat.id, exc)
+            return None
 
     async def send_welcome(message: Message):
         welcome_text = ui_manager.format_panel(
@@ -33,7 +41,7 @@ def register_command_handlers(router: Router):
             icon="⚡",
             footer="Команды: /help · /status · /stats · /cancel",
         )
-        await message.reply(welcome_text)
+        await safe_reply(message, welcome_text)
 
     async def help_command(message: Message):
         help_text = ui_manager.format_panel(
@@ -58,14 +66,14 @@ def register_command_handlers(router: Router):
             ],
             icon="📖",
         )
-        await message.reply(help_text)
+        await safe_reply(message, help_text)
 
     async def status_command(message: Message):
         from .download_handlers import get_download_manager
 
         manager = get_download_manager()
         if manager is None:
-            await message.reply("⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
+            await safe_reply(message, "⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
             return
 
         with manager.lock:
@@ -76,7 +84,8 @@ def register_command_handlers(router: Router):
             }
 
         if not user_tasks:
-            await message.reply(
+            await safe_reply(
+                message,
                 ui_manager.format_panel(
                     "Активных загрузок нет",
                     ["Отправьте новую ссылку, и я покажу варианты скачивания."],
@@ -124,7 +133,8 @@ def register_command_handlers(router: Router):
             ]
         )
 
-        await message.reply(
+        await safe_reply(
+            message,
             ui_manager.format_panel("Ваши загрузки", status_lines, icon="📦"),
             reply_markup=keyboard,
         )
@@ -134,7 +144,7 @@ def register_command_handlers(router: Router):
 
         manager = get_download_manager()
         if manager is None:
-            await message.reply("⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
+            await safe_reply(message, "⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
             return
 
         with manager.lock:
@@ -145,7 +155,8 @@ def register_command_handlers(router: Router):
             }
 
         if not user_tasks:
-            await message.reply(
+            await safe_reply(
+                message,
                 ui_manager.format_panel(
                     "Отменять нечего",
                     ["Сейчас у вас нет активных загрузок."],
@@ -159,7 +170,8 @@ def register_command_handlers(router: Router):
             if manager.cancel_task(task_id):
                 cancelled_count += 1
 
-        await message.reply(
+        await safe_reply(
+            message,
             ui_manager.format_panel(
                 "Загрузки отменены",
                 [f"Отменено: {cancelled_count}", "Теперь можно начать новую."],
@@ -218,7 +230,8 @@ def register_command_handlers(router: Router):
                 success_rate = (user_stats.downloads_count / total_attempts) * 100
                 stats_lines.append(f"Успешные загрузки: {success_rate:.1f}%")
 
-        await message.reply(
+        await safe_reply(
+            message,
             ui_manager.format_panel("Ваша статистика", stats_lines, icon="📊")
         )
 

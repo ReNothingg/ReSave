@@ -26,6 +26,13 @@ from .media_assets import (
 logger = logging.getLogger(__name__)
 
 
+def _ffmpeg_location() -> str | None:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return None
+    return str(os.path.dirname(ffmpeg_path))
+
+
 def handle_download_task(task, bot, temp_dir):
     from ..utils.error_handler import get_error_handler
     from ..utils.retry_manager import DOWNLOAD_RETRY_CONFIG, get_smart_retry_manager
@@ -168,11 +175,26 @@ def _download_and_send_video(task, bot, temp_dir):
 
     if post:
         ydl_params["postprocessors"] = post
-    if shutil.which("ffmpeg"):
-        ydl_params["ffmpeg_location"] = shutil.which("ffmpeg")
+    ffmpeg_location = _ffmpeg_location()
+    if ffmpeg_location:
+        ydl_params["ffmpeg_location"] = ffmpeg_location
 
-    with yt_dlp.YoutubeDL(ydl_params) as ydl:
-        ydl.download([task.url])
+    try:
+        with yt_dlp.YoutubeDL(ydl_params) as ydl:
+            ydl.download([task.url])
+    except yt_dlp.utils.DownloadError as exc:
+        if "tiktok.com" not in task.url or "requested format is not available" not in str(exc).lower():
+            raise
+
+        logger.warning("TikTok format fallback for task %s: %s", task.task_id, exc)
+        for leftover in work_dir.iterdir():
+            if leftover.is_file():
+                leftover.unlink(missing_ok=True)
+
+        fallback_params = dict(ydl_params)
+        fallback_params["format"] = "bv*+ba/best"
+        with yt_dlp.YoutubeDL(fallback_params) as ydl:
+            ydl.download([task.url])
 
     downloaded_files = find_completed_files(work_dir)
     if not downloaded_files:
