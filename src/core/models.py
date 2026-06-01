@@ -40,3 +40,4 @@ class InlineQuery:
     file_id: Optional[str] = None
     timestamp: float = 0.0
     status: str = "pending"
+    error: Optional[str] = None

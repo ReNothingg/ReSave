@@ -12,6 +12,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 BOT_API_STARTUP_TIMEOUT="${BOT_API_STARTUP_TIMEOUT:-15}"
 RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-true}"
 RESTART_DELAY="${RESTART_DELAY:-5}"
+LOCK_DIR="${LOCK_DIR:-$APP_DIR/.run_alwaysdata_local_bot_api.lock}"
 BOT_API_PID=""
 BOT_PID=""
 
@@ -52,6 +53,28 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
 }
 
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" >"$LOCK_DIR/pid"
+    return 0
+  fi
+
+  local existing_pid=""
+  if [ -f "$LOCK_DIR/pid" ]; then
+    existing_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    log "Another ReSave service wrapper is already running: pid=$existing_pid"
+    exit 1
+  fi
+
+  log "Removing stale service lock"
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR"
+  printf '%s\n' "$$" >"$LOCK_DIR/pid"
+}
+
 is_running() {
   [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
 }
@@ -78,8 +101,13 @@ cleanup_children() {
 
 cleanup() {
   cleanup_children
+  if [ -f "$LOCK_DIR/pid" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$LOCK_DIR"
+  fi
 }
 trap cleanup EXIT HUP INT TERM
+
+acquire_lock
 
 start_bot_api() {
   log "Starting telegram-bot-api at $BOT_API_BASE_URL"
