@@ -56,6 +56,18 @@ INLINE_NETWORK_ERROR_KEYWORDS = (
 )
 
 
+INLINE_UPLOAD_ERROR_KEYWORDS = (
+    "failed to decode object",
+    "jsondecodeerror",
+    "broken pipe",
+    "connection reset",
+    "server disconnected",
+    "can't initiate conversation",
+    "bot was blocked",
+    "forbidden",
+)
+
+
 def set_download_manager(manager):
     global _download_manager
     _download_manager = manager
@@ -197,6 +209,11 @@ def _is_inline_network_error(exc: Exception) -> bool:
     return any(keyword in error_text for keyword in INLINE_NETWORK_ERROR_KEYWORDS)
 
 
+def _is_inline_upload_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return any(keyword in error_text for keyword in INLINE_UPLOAD_ERROR_KEYWORDS)
+
+
 def _is_expired_inline_query_error(exc: Exception) -> bool:
     error_text = str(exc).lower()
     return (
@@ -321,6 +338,11 @@ def register_download_handlers(router: Router, sync_bot):
                 import yt_dlp
 
                 try:
+                    cache_chat_id = (
+                        config.INLINE_CACHE_CHAT_ID
+                        or (config.ADMIN_IDS[0] if config.ADMIN_IDS else user_id)
+                    )
+
                     if "tiktok.com" in query_text and "/photo/" in query_text:
                         return "tiktok_photo", None
 
@@ -396,18 +418,27 @@ def register_download_handlers(router: Router, sync_bot):
 
                     try:
                         caption = MessageTemplate.format_inline_caption(original_title, query_text)
-                        message = sync_bot.send_video(
+                        logger.debug(
+                            "Inline upload to cache chat: user_id=%s cache_chat_id=%s size=%.1fMB path=%s",
                             user_id,
+                            cache_chat_id,
+                            file_size / (1024 * 1024),
+                            file_path,
+                        )
+                        message = sync_bot.send_video(
+                            cache_chat_id,
                             file_path,
                             caption=caption,
                             parse_mode="HTML",
                             supports_streaming=True,
                             timeout=60,
                         )
+                        if not message.video:
+                            raise RuntimeError("Telegram did not return video metadata")
                         file_id = message.video.file_id
 
                         try:
-                            sync_bot.delete_message(user_id, message.message_id)
+                            sync_bot.delete_message(cache_chat_id, message.message_id)
                         except Exception:
                             logger.debug("Не удалось удалить временное inline-сообщение")
 
@@ -445,6 +476,8 @@ def register_download_handlers(router: Router, sync_bot):
                             logger.debug("Не удалось очистить inline-директорию %s", inline_dir)
                         if _is_inline_network_error(exc):
                             return "network_error", info
+                        if _is_inline_upload_error(exc):
+                            return "upload_error", info
                         return None, None
 
                 except Exception as exc:
@@ -459,6 +492,8 @@ def register_download_handlers(router: Router, sync_bot):
                         logger.debug("Не удалось очистить inline-директорию %s", locals().get("inline_dir"))
                     if _is_inline_network_error(exc):
                         return "network_error", None
+                    if _is_inline_upload_error(exc):
+                        return "upload_error", None
                     return None, None
 
             try:
@@ -476,6 +511,7 @@ def register_download_handlers(router: Router, sync_bot):
                 "too_large",
                 "playlist",
                 "tiktok_photo",
+                "upload_error",
             }:
                 title = info.get("title", "Видео")
                 caption = MessageTemplate.format_inline_caption(title, query_text)
@@ -530,6 +566,29 @@ def register_download_handlers(router: Router, sync_bot):
                         message_text=(
                             "Не удалось загрузить видео из-за сетевого таймаута.\n\n"
                             "Попробуйте отправить эту же ссылку еще раз через несколько секунд:\n"
+                            f"{query_text}"
+                        )
+                    ),
+                    thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+                )
+                await answer_inline_query(
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button,
+                )
+                return
+
+            if file_id == "upload_error":
+                title = info.get("title", "Видео") if info else "Видео"
+                result = InlineQueryResultArticle(
+                    id=f"upload_error_{uuid4().hex[:8]}",
+                    title="Inline-видео не подготовлено",
+                    description="Откройте бота и отправьте ссылку напрямую",
+                    input_message_content=InputTextMessageContent(
+                        message_text=(
+                            f'Не удалось подготовить inline-видео "{title}".\n\n'
+                            "Откройте @ReSafeBot и отправьте ссылку напрямую:\n"
                             f"{query_text}"
                         )
                     ),
