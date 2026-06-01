@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 def send_file_with_retry(task, file_path, title, bot):
     from ..utils.error_handler import get_error_handler
-    from ..utils.retry_manager import UPLOAD_RETRY_CONFIG, get_smart_retry_manager
+    from ..utils.retry_manager import (
+        NonRetryableError,
+        UPLOAD_RETRY_CONFIG,
+        get_smart_retry_manager,
+    )
 
     error_handler = get_error_handler()
     retry_manager = get_smart_retry_manager(UPLOAD_RETRY_CONFIG)
@@ -56,6 +60,12 @@ def send_file_with_retry(task, file_path, title, bot):
                 f"{sanitize_filename(original_title) or 'video'}"
                 f"{file_extension or '.mp4'}"
             )
+            logger.debug(
+                "Sending file as document: task_id=%s size=%.1fMB path=%s",
+                task.task_id,
+                file_size_mb,
+                file_path,
+            )
             bot.send_document(
                 task.chat_id,
                 file_path,
@@ -67,6 +77,12 @@ def send_file_with_retry(task, file_path, title, bot):
             )
             return
 
+        logger.debug(
+            "Sending file as video: task_id=%s size=%.1fMB path=%s",
+            task.task_id,
+            file_size_mb,
+            file_path,
+        )
         bot.send_video(
             task.chat_id,
             file_path,
@@ -108,4 +124,4 @@ def send_file_with_retry(task, file_path, title, bot):
         record_download_success(task.chat_id, action=stats_action, file_size_mb=file_size_mb)
     except Exception as exc:
         logger.error("Ошибка при отправке файла после всех попыток: %s", exc)
-        raise
+        raise NonRetryableError(f"Upload failed after retries: {exc}") from exc

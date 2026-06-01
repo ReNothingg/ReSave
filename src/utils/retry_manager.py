@@ -7,6 +7,10 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 
+class NonRetryableError(Exception):
+    """Error wrapper for failures that must not be retried by outer operations."""
+
+
 class RetryStrategy(Enum):
     EXPONENTIAL = "exponential"
     LINEAR = "linear"
@@ -121,6 +125,10 @@ class RetryManager:
 
     def _should_retry(self, exception: Exception, attempt_count: int) -> bool:
         if attempt_count >= self.config.max_retries:
+            return False
+
+        if isinstance(exception, NonRetryableError):
+            logger.debug("NonRetryableError не повторяем: %s", exception)
             return False
 
         if isinstance(exception, FileNotFoundError):

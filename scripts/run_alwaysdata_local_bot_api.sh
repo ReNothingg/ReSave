@@ -9,6 +9,9 @@ BOT_API_DIR="${BOT_API_DIR:-$APP_DIR/.telegram-bot-api}"
 BOT_API_TEMP_DIR="${BOT_API_TEMP_DIR:-$APP_DIR/temp_downloads/bot-api}"
 LOG_DIR="${LOG_DIR:-$APP_DIR/logs}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+BOT_API_STARTUP_TIMEOUT="${BOT_API_STARTUP_TIMEOUT:-15}"
+RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-true}"
+RESTART_DELAY="${RESTART_DELAY:-5}"
 BOT_API_PID=""
 BOT_PID=""
 
@@ -43,34 +46,134 @@ mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 export BOT_API_BASE_URL="http://$BOT_API_HOST:$BOT_API_PORT"
 export BOT_API_IS_LOCAL="true"
+BOT_API_LOG_FILE="$LOG_DIR/telegram-bot-api.log"
 
-"$BOT_API_BIN" \
-  --api-id="$TELEGRAM_API_ID" \
-  --api-hash="$TELEGRAM_API_HASH" \
-  --local \
-  --http-ip-address="$BOT_API_HOST" \
-  --http-port="$BOT_API_PORT" \
-  --dir="$BOT_API_DIR" \
-  --temp-dir="$BOT_API_TEMP_DIR" \
-  --verbosity="${BOT_API_VERBOSITY:-2}" \
-  >"$LOG_DIR/telegram-bot-api.log" 2>&1 &
-BOT_API_PID=$!
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
 
-cleanup() {
-  if [ -n "$BOT_API_PID" ]; then
-    kill "$BOT_API_PID" 2>/dev/null || true
-    wait "$BOT_API_PID" 2>/dev/null || true
-  fi
-  if [ -n "$BOT_PID" ]; then
+is_running() {
+  [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+}
+
+bot_api_accepts_connections() {
+  { exec 3<>"/dev/tcp/$BOT_API_HOST/$BOT_API_PORT"; } 2>/dev/null || return 1
+  exec 3<&-
+  exec 3>&-
+  return 0
+}
+
+cleanup_children() {
+  if is_running "$BOT_PID"; then
     kill "$BOT_PID" 2>/dev/null || true
     wait "$BOT_PID" 2>/dev/null || true
   fi
+  if is_running "$BOT_API_PID"; then
+    kill "$BOT_API_PID" 2>/dev/null || true
+    wait "$BOT_API_PID" 2>/dev/null || true
+  fi
+  BOT_PID=""
+  BOT_API_PID=""
+}
+
+cleanup() {
+  cleanup_children
 }
 trap cleanup EXIT HUP INT TERM
 
-sleep 2
+start_bot_api() {
+  log "Starting telegram-bot-api at $BOT_API_BASE_URL"
+  "$BOT_API_BIN" \
+    --api-id="$TELEGRAM_API_ID" \
+    --api-hash="$TELEGRAM_API_HASH" \
+    --local \
+    --http-ip-address="$BOT_API_HOST" \
+    --http-port="$BOT_API_PORT" \
+    --dir="$BOT_API_DIR" \
+    --temp-dir="$BOT_API_TEMP_DIR" \
+    --verbosity="${BOT_API_VERBOSITY:-1}" \
+    >"$BOT_API_LOG_FILE" 2>&1 &
+  BOT_API_PID=$!
+}
 
-"$PYTHON_BIN" main.py &
-BOT_PID=$!
+wait_for_bot_api() {
+  local elapsed=0
+  while [ "$elapsed" -lt "$BOT_API_STARTUP_TIMEOUT" ]; do
+    if bot_api_accepts_connections; then
+      log "telegram-bot-api is accepting connections"
+      return 0
+    fi
 
-wait -n "$BOT_API_PID" "$BOT_PID"
+    if ! is_running "$BOT_API_PID"; then
+      log "telegram-bot-api exited during startup"
+      tail -n 80 "$BOT_API_LOG_FILE" >&2 || true
+      return 1
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  log "telegram-bot-api did not open $BOT_API_HOST:$BOT_API_PORT in ${BOT_API_STARTUP_TIMEOUT}s"
+  tail -n 80 "$BOT_API_LOG_FILE" >&2 || true
+  return 1
+}
+
+start_bot() {
+  log "Starting ReSave bot"
+  "$PYTHON_BIN" main.py &
+  BOT_PID=$!
+}
+
+monitor_children() {
+  while true; do
+    if ! is_running "$BOT_API_PID"; then
+      wait "$BOT_API_PID" 2>/dev/null
+      local status=$?
+      log "telegram-bot-api exited with status $status"
+      return "$status"
+    fi
+
+    if ! is_running "$BOT_PID"; then
+      wait "$BOT_PID" 2>/dev/null
+      local status=$?
+      log "ReSave bot exited with status $status"
+      return "$status"
+    fi
+
+    sleep 2
+  done
+}
+
+while true; do
+  start_bot_api
+  set +e
+  wait_for_bot_api
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ]; then
+    cleanup_children
+    if [ "$RESTART_ON_FAILURE" != "true" ]; then
+      exit "$status"
+    fi
+    log "Restarting service pair in ${RESTART_DELAY}s"
+    sleep "$RESTART_DELAY"
+    continue
+  fi
+
+  start_bot
+
+  set +e
+  monitor_children
+  status=$?
+  set -e
+
+  cleanup_children
+
+  if [ "$RESTART_ON_FAILURE" != "true" ]; then
+    exit "$status"
+  fi
+
+  log "Restarting service pair in ${RESTART_DELAY}s"
+  sleep "$RESTART_DELAY"
+done
