@@ -271,6 +271,9 @@ def register_download_handlers(router: Router, sync_bot):
     def _is_http_url(value: str | None) -> bool:
         return bool(value and value.startswith(("http://", "https://")))
 
+    def _is_tiktok_url(value: str) -> bool:
+        return "tiktok.com" in value.lower()
+
     def _direct_thumbnail_url(info: dict) -> str:
         thumbnail = str(info.get("thumbnail") or "")
         if thumbnail.lower().split("?", 1)[0].endswith((".jpg", ".jpeg")):
@@ -330,16 +333,9 @@ def register_download_handlers(router: Router, sync_bot):
     def build_direct_inline_video_result(url: str, user_id: int):
         import yt_dlp
 
-        if "tiktok.com" in url and "/photo/" in url:
-            return inline_article(
-                status="tiktok_photo",
-                title="TikTok фото откройте в боте",
-                description="Inline-режим не отправляет фото-посты",
-                message_text=(
-                    "TikTok фото-пост лучше скачать напрямую в @ReSafeBot.\n\n"
-                    f"Отправьте эту ссылку боту:\n{url}"
-                ),
-            )
+        if _is_tiktok_url(url):
+            logger.info("Inline direct skipped for TikTok URL: user_id=%s url=%s", user_id, url)
+            return None
 
         ydl_opts = {
             "quiet": True,
@@ -777,18 +773,13 @@ def register_download_handlers(router: Router, sync_bot):
                         logger.warning("Telegram rejected direct inline video: %s", exc)
 
             if not config.INLINE_BACKGROUND_CACHE_ENABLED:
-                result = inline_article(
-                    status="open_bot",
-                    title="Откройте ReSave",
-                    description="Не удалось подготовить прямое inline-видео",
-                    message_text=(
-                        "Не удалось подготовить inline-видео без скачивания на сервер.\n\n"
-                        "Откройте @ReSafeBot и отправьте ссылку напрямую:\n"
-                        f"{query_text}"
-                    ),
+                logger.info(
+                    "Inline direct unavailable; returning open-bot button only: user_id=%s url=%s",
+                    user_id,
+                    query_text,
                 )
                 await answer_inline_query(
-                    results=[result],
+                    results=[],
                     cache_time=1,
                     is_personal=True,
                     button=open_bot_button(),
