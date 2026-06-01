@@ -17,6 +17,7 @@ from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
     InlineQueryResultCachedVideo,
+    InlineQueryResultVideo,
     InlineQueryResultsButton,
     InputTextMessageContent,
     Message,
@@ -67,6 +68,9 @@ INLINE_UPLOAD_ERROR_KEYWORDS = (
     "bot was blocked",
     "forbidden",
 )
+
+
+INLINE_THUMBNAIL_URL = "https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg"
 
 
 def set_download_manager(manager):
@@ -249,7 +253,7 @@ def register_download_handlers(router: Router, sync_bot):
             title=title,
             description=description,
             input_message_content=InputTextMessageContent(message_text=message_text),
-            thumbnail_url="https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg",
+            thumbnail_url=INLINE_THUMBNAIL_URL,
         )
 
     def cached_video_result(item: InlineQueryCacheItem, url: str) -> InlineQueryResultCachedVideo:
@@ -262,6 +266,157 @@ def register_download_handlers(router: Router, sync_bot):
             description="Готово к отправке",
             caption=MessageTemplate.format_inline_caption(title, url),
             parse_mode="HTML",
+        )
+
+    def _is_http_url(value: str | None) -> bool:
+        return bool(value and value.startswith(("http://", "https://")))
+
+    def _direct_thumbnail_url(info: dict) -> str:
+        thumbnail = str(info.get("thumbnail") or "")
+        if thumbnail.lower().split("?", 1)[0].endswith((".jpg", ".jpeg")):
+            return thumbnail
+        return INLINE_THUMBNAIL_URL
+
+    def _format_filesize(format_info: dict) -> int | None:
+        filesize = format_info.get("filesize") or format_info.get("filesize_approx")
+        return int(filesize) if isinstance(filesize, (int, float)) and filesize > 0 else None
+
+    def _format_is_direct_mp4(format_info: dict, *, require_audio: bool) -> bool:
+        video_url = format_info.get("url")
+        if not _is_http_url(video_url):
+            return False
+        if (format_info.get("ext") or "").lower() != "mp4":
+            return False
+        if format_info.get("vcodec") in {None, "none"}:
+            return False
+        if require_audio and format_info.get("acodec") in {None, "none"}:
+            return False
+
+        protocol = (format_info.get("protocol") or "").lower()
+        return "m3u8" not in protocol and "dash" not in protocol
+
+    def _select_direct_mp4(info: dict, user_id: int) -> dict | None:
+        formats = list(info.get("formats") or [])
+        if info.get("url"):
+            formats.append(info)
+
+        too_large_seen = False
+        for require_audio in (True, False):
+            candidates = []
+            for format_info in formats:
+                if not _format_is_direct_mp4(format_info, require_audio=require_audio):
+                    continue
+
+                height = format_info.get("height")
+                if isinstance(height, int) and height > 720:
+                    continue
+
+                filesize = _format_filesize(format_info)
+                if filesize and build_file_size_limit_error(user_id, filesize):
+                    too_large_seen = True
+                    continue
+
+                width = format_info.get("width") if isinstance(format_info.get("width"), int) else 0
+                normalized_height = height if isinstance(height, int) else 0
+                candidates.append((normalized_height, width, format_info))
+
+            if candidates:
+                return max(candidates, key=lambda item: (item[0], item[1]))[2]
+
+        if too_large_seen:
+            return {"_inline_status": "too_large"}
+        return None
+
+    def build_direct_inline_video_result(url: str, user_id: int):
+        import yt_dlp
+
+        if "tiktok.com" in url and "/photo/" in url:
+            return inline_article(
+                status="tiktok_photo",
+                title="TikTok фото откройте в боте",
+                description="Inline-режим не отправляет фото-посты",
+                message_text=(
+                    "TikTok фото-пост лучше скачать напрямую в @ReSafeBot.\n\n"
+                    f"Отправьте эту ссылку боту:\n{url}"
+                ),
+            )
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "skip_download": True,
+            "socket_timeout": 8,
+            "retries": 1,
+            "extractor_retries": 1,
+            "cookiefile": config.COOKIES_FILE,
+            "nocheckcertificate": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if not info:
+            return None
+
+        if info.get("_type") == "playlist":
+            playlist_text = build_playlist_limit_error(
+                user_id,
+                len(collect_playlist_entries(info or {})),
+            ) or "Плейлист лучше отправить напрямую в @ReSafeBot."
+            return inline_article(
+                status="playlist",
+                title="Плейлист откройте в боте",
+                description="Inline-режим рассчитан на одиночные ролики",
+                message_text=playlist_text,
+            )
+
+        duration_error = build_duration_limit_error(user_id, info.get("duration"))
+        if duration_error:
+            return inline_article(
+                status="limit",
+                title="Видео слишком длинное",
+                description="Откройте бота, чтобы скачать с подсказками",
+                message_text=duration_error,
+            )
+
+        direct_format = _select_direct_mp4(info, user_id)
+        if direct_format and direct_format.get("_inline_status") == "too_large":
+            limit_text = (
+                build_file_size_limit_error(user_id, config.BOT_API_UPLOAD_LIMIT + 1)
+                or "Видео превышает допустимый размер."
+            )
+            return inline_article(
+                status="size_limit",
+                title="Файл слишком большой",
+                description="Откройте бота, чтобы скачать с подсказками",
+                message_text=limit_text,
+            )
+        if not direct_format:
+            return None
+
+        title = info.get("title", "Видео")
+        height = direct_format.get("height") if isinstance(direct_format.get("height"), int) else None
+        width = direct_format.get("width") if isinstance(direct_format.get("width"), int) else None
+        duration = info.get("duration") if isinstance(info.get("duration"), int) else None
+        logger.debug(
+            "Inline direct video: user_id=%s height=%s url=%s",
+            user_id,
+            height,
+            url,
+        )
+        return InlineQueryResultVideo(
+            id=f"direct_{uuid4().hex[:8]}",
+            video_url=direct_format["url"],
+            mime_type="video/mp4",
+            thumbnail_url=_direct_thumbnail_url(info),
+            title=title,
+            caption=MessageTemplate.format_inline_caption(title, url),
+            parse_mode="HTML",
+            video_width=width,
+            video_height=height,
+            video_duration=duration,
+            description="Отправить видео напрямую",
         )
 
     def prune_inline_cache_locked() -> None:
@@ -587,6 +742,56 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[cached_video_result(item, query_text)],
                     cache_time=300,
                     is_personal=True,
+                )
+                return
+
+            if config.INLINE_DIRECT_RESULTS_ENABLED:
+                try:
+                    direct_result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            build_direct_inline_video_result,
+                            query_text,
+                            user_id,
+                        ),
+                        timeout=config.INLINE_EXTRACT_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Inline direct extraction timed out: user_id=%s url=%s", user_id, query_text)
+                    direct_result = None
+                except Exception as exc:
+                    logger.warning("Inline direct extraction failed: %s", exc)
+                    direct_result = None
+
+                if direct_result:
+                    try:
+                        await answer_inline_query(
+                            results=[direct_result],
+                            cache_time=60,
+                            is_personal=True,
+                        )
+                        return
+                    except TelegramBadRequest as exc:
+                        if _is_expired_inline_query_error(exc):
+                            logger.warning("Inline query expired before direct answer: %s", exc)
+                            return
+                        logger.warning("Telegram rejected direct inline video: %s", exc)
+
+            if not config.INLINE_BACKGROUND_CACHE_ENABLED:
+                result = inline_article(
+                    status="open_bot",
+                    title="Откройте ReSave",
+                    description="Не удалось подготовить прямое inline-видео",
+                    message_text=(
+                        "Не удалось подготовить inline-видео без скачивания на сервер.\n\n"
+                        "Откройте @ReSafeBot и отправьте ссылку напрямую:\n"
+                        f"{query_text}"
+                    ),
+                )
+                await answer_inline_query(
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button(),
                 )
                 return
 

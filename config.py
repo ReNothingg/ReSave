@@ -91,6 +91,9 @@ class Settings:
     inline_download_timeout: int
     inline_cache_chat_id: int
     inline_ready_wait_timeout: int
+    inline_direct_results_enabled: bool
+    inline_extract_timeout: int
+    inline_background_cache_enabled: bool
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -124,6 +127,9 @@ def build_settings() -> Settings:
         inline_download_timeout=_get_int("INLINE_DOWNLOAD_TIMEOUT", 120, minimum=1),
         inline_cache_chat_id=_get_int("INLINE_CACHE_CHAT_ID", 0),
         inline_ready_wait_timeout=_get_int("INLINE_READY_WAIT_TIMEOUT", 4, minimum=0),
+        inline_direct_results_enabled=_get_bool("INLINE_DIRECT_RESULTS_ENABLED", True),
+        inline_extract_timeout=_get_int("INLINE_EXTRACT_TIMEOUT", 8, minimum=1),
+        inline_background_cache_enabled=_get_bool("INLINE_BACKGROUND_CACHE_ENABLED", False),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -173,5 +179,8 @@ INLINE_DOWNLOAD_ENABLED = SETTINGS.inline_download_enabled
 INLINE_DOWNLOAD_TIMEOUT = SETTINGS.inline_download_timeout
 INLINE_CACHE_CHAT_ID = SETTINGS.inline_cache_chat_id
 INLINE_READY_WAIT_TIMEOUT = SETTINGS.inline_ready_wait_timeout
+INLINE_DIRECT_RESULTS_ENABLED = SETTINGS.inline_direct_results_enabled
+INLINE_EXTRACT_TIMEOUT = SETTINGS.inline_extract_timeout
+INLINE_BACKGROUND_CACHE_ENABLED = SETTINGS.inline_background_cache_enabled
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items
