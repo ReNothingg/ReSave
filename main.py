@@ -156,8 +156,8 @@ async def run():
         set_download_manager(download_manager)
 
         logger.info("Регистрация aiogram-хендлеров...")
-        register_command_handlers(router)
-        register_download_handlers(router, sync_bot)
+        start_url_handler = register_download_handlers(router, sync_bot)
+        register_command_handlers(router, start_url_handler=start_url_handler)
         register_admin_handlers(router)
         dispatcher.include_router(router)
 

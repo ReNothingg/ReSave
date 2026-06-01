@@ -71,6 +71,38 @@ INLINE_UPLOAD_ERROR_KEYWORDS = (
 
 
 INLINE_THUMBNAIL_URL = "https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg"
+INLINE_START_LINK_TTL = 15 * 60
+
+_inline_start_links: dict[str, tuple[str, float]] = {}
+_inline_start_links_lock = threading.Lock()
+
+
+def _prune_inline_start_links_locked(now: float | None = None) -> None:
+    current_time = now or time.time()
+    for token, (_, created_at) in list(_inline_start_links.items()):
+        if current_time - created_at > INLINE_START_LINK_TTL:
+            _inline_start_links.pop(token, None)
+
+
+def create_inline_start_parameter(url: str) -> str:
+    token = f"i_{uuid4().hex[:16]}"
+    with _inline_start_links_lock:
+        _prune_inline_start_links_locked()
+        _inline_start_links[token] = (url, time.time())
+    return token
+
+
+def resolve_inline_start_url(parameter: str | None) -> str | None:
+    if not parameter:
+        return None
+
+    token = parameter.strip()
+    with _inline_start_links_lock:
+        _prune_inline_start_links_locked()
+        item = _inline_start_links.get(token)
+        if not item:
+            return None
+        return item[0]
 
 
 def set_download_manager(manager):
@@ -235,10 +267,10 @@ def register_download_handlers(router: Router, sync_bot):
     inline_cache_lock = threading.Lock()
     inline_jobs: set[asyncio.Task] = set()
 
-    def open_bot_button() -> InlineQueryResultsButton:
+    def open_bot_button(url: str | None = None) -> InlineQueryResultsButton:
         return InlineQueryResultsButton(
             text="Открыть ReSave",
-            start_parameter="start",
+            start_parameter=create_inline_start_parameter(url) if url else "start",
         )
 
     def inline_article(
@@ -728,7 +760,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -782,7 +814,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -818,7 +850,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -837,7 +869,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -857,7 +889,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -876,7 +908,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -895,7 +927,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -914,7 +946,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -932,7 +964,7 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(),
+                    button=open_bot_button(query_text),
                 )
                 return
 
@@ -949,7 +981,7 @@ def register_download_handlers(router: Router, sync_bot):
                 results=[result],
                 cache_time=1,
                 is_personal=True,
-                button=open_bot_button(),
+                button=open_bot_button(query_text),
             )
         except Exception as exc:
             logger.exception("Critical inline error: %s", exc)
@@ -959,14 +991,17 @@ def register_download_handlers(router: Router, sync_bot):
                 is_personal=True,
             )
 
-    async def handle_url(message: Message):
+    async def process_url_message(message: Message, text_override: str | None = None):
         from ..utils.url_validator import get_url_validator
 
-        if not message.text:
+        if text_override is None and not message.text:
             return
 
-        text = message.text.strip()
-        if text.startswith("/"):
+        text = (text_override if text_override is not None else message.text or "").strip()
+        if not text:
+            return
+
+        if text_override is None and text.startswith("/"):
             return
 
         url_validator = get_url_validator()
@@ -1044,6 +1079,9 @@ def register_download_handlers(router: Router, sync_bot):
                 video_info_cache,
             )
         )
+
+    async def handle_url(message: Message):
+        await process_url_message(message)
 
     async def handle_download(call: CallbackQuery):
         if not call.data or not call.message:
@@ -1152,6 +1190,8 @@ def register_download_handlers(router: Router, sync_bot):
         handle_cancel,
         lambda call: bool(call.data and call.data.startswith("cancel_")),
     )
+
+    return process_url_message
 
 
 def handle_group_download(url: str, chat_id: int, message_id: int):
