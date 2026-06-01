@@ -90,6 +90,7 @@ class Settings:
     inline_download_enabled: bool
     inline_download_timeout: int
     inline_cache_chat_id: int
+    inline_ready_wait_timeout: int
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -122,6 +123,7 @@ def build_settings() -> Settings:
         inline_download_enabled=_get_bool("INLINE_DOWNLOAD_ENABLED", False),
         inline_download_timeout=_get_int("INLINE_DOWNLOAD_TIMEOUT", 120, minimum=1),
         inline_cache_chat_id=_get_int("INLINE_CACHE_CHAT_ID", 0),
+        inline_ready_wait_timeout=_get_int("INLINE_READY_WAIT_TIMEOUT", 4, minimum=0),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -170,5 +172,6 @@ LOG_LEVEL = SETTINGS.log_level
 INLINE_DOWNLOAD_ENABLED = SETTINGS.inline_download_enabled
 INLINE_DOWNLOAD_TIMEOUT = SETTINGS.inline_download_timeout
 INLINE_CACHE_CHAT_ID = SETTINGS.inline_cache_chat_id
+INLINE_READY_WAIT_TIMEOUT = SETTINGS.inline_ready_wait_timeout
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items

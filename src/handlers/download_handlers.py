@@ -485,6 +485,24 @@ def register_download_handlers(router: Router, sync_bot):
 
         task.add_done_callback(on_done)
 
+    async def wait_for_inline_resolution(url: str) -> InlineQueryCacheItem | None:
+        deadline = time.monotonic() + config.INLINE_READY_WAIT_TIMEOUT
+        terminal_statuses = {
+            "ready",
+            "error",
+            "network_error",
+            "upload_error",
+            "too_long",
+            "too_large",
+            "playlist",
+            "tiktok_photo",
+        }
+        item = get_inline_item(url)
+        while item and item.status not in terminal_statuses and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+            item = get_inline_item(url)
+        return item
+
     async def inline_query_handler(inline_query: InlineQuery, bot: Bot):
         query_text = (inline_query.query or "").strip()
         user_id = inline_query.from_user.id
@@ -575,6 +593,16 @@ def register_download_handlers(router: Router, sync_bot):
             if not item:
                 schedule_inline_job(query_text, user_id, inline_query.id)
                 item = get_inline_item(query_text)
+
+            if item and item.status in {"pending", "downloading"}:
+                item = await wait_for_inline_resolution(query_text)
+                if item and item.status == "ready" and item.file_id:
+                    await answer_inline_query(
+                        results=[cached_video_result(item, query_text)],
+                        cache_time=300,
+                        is_personal=True,
+                    )
+                    return
 
             status = item.status if item else "pending"
             info = item.info if item else None
