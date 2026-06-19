@@ -88,8 +88,12 @@ class Settings:
     vip_users: tuple[int, ...]
     log_level: str
     inline_cache_chat_id: int
-    inline_direct_results_enabled: bool
-    inline_extract_timeout: int
+    inline_cache_ttl: int
+    inline_error_ttl: int
+    inline_request_ttl: int
+    inline_prepare_timeout: int
+    inline_max_concurrent: int
+    inline_debounce_ms: int
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -120,8 +124,12 @@ def build_settings() -> Settings:
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         inline_cache_chat_id=_get_int("INLINE_CACHE_CHAT_ID", 0),
-        inline_direct_results_enabled=_get_bool("INLINE_DIRECT_RESULTS_ENABLED", True),
-        inline_extract_timeout=_get_int("INLINE_EXTRACT_TIMEOUT", 8, minimum=1),
+        inline_cache_ttl=_get_int("INLINE_CACHE_TTL", 90 * 24 * 60 * 60, minimum=60),
+        inline_error_ttl=_get_int("INLINE_ERROR_TTL", 60, minimum=0),
+        inline_request_ttl=_get_int("INLINE_REQUEST_TTL", 60 * 60, minimum=60),
+        inline_prepare_timeout=_get_int("INLINE_PREPARE_TIMEOUT", 10 * 60, minimum=30),
+        inline_max_concurrent=_get_int("INLINE_MAX_CONCURRENT", 1, minimum=1),
+        inline_debounce_ms=_get_int("INLINE_DEBOUNCE_MS", 450, minimum=0),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -168,7 +176,11 @@ ADMIN_IDS = SETTINGS.admin_ids
 VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
 INLINE_CACHE_CHAT_ID = SETTINGS.inline_cache_chat_id
-INLINE_DIRECT_RESULTS_ENABLED = SETTINGS.inline_direct_results_enabled
-INLINE_EXTRACT_TIMEOUT = SETTINGS.inline_extract_timeout
+INLINE_CACHE_TTL = SETTINGS.inline_cache_ttl
+INLINE_ERROR_TTL = SETTINGS.inline_error_ttl
+INLINE_REQUEST_TTL = SETTINGS.inline_request_ttl
+INLINE_PREPARE_TIMEOUT = SETTINGS.inline_prepare_timeout
+INLINE_MAX_CONCURRENT = SETTINGS.inline_max_concurrent
+INLINE_DEBOUNCE_MS = SETTINGS.inline_debounce_ms
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items

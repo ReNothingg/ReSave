@@ -138,6 +138,12 @@ SEND_AS_DOC_LIMIT=2097152000
 MAX_CONCURRENT_DOWNLOADS=1
 MAX_DOWNLOADS_PER_USER=1
 INLINE_CACHE_CHAT_ID=123456789
+INLINE_MAX_CONCURRENT=1
+INLINE_CACHE_TTL=7776000
+INLINE_ERROR_TTL=60
+INLINE_REQUEST_TTL=3600
+INLINE_PREPARE_TIMEOUT=600
+INLINE_DEBOUNCE_MS=450
 ```
 
 Команда для вкладки Service:
@@ -186,8 +192,13 @@ python main.py
 | `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
 | `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
 | `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
-| `INLINE_CACHE_CHAT_ID` | Чат для временной загрузки inline-видео и получения `file_id`; если пусто, используется первый `ADMIN_IDS` |
-| `INLINE_DIRECT_RESULTS_ENABLED`, `INLINE_EXTRACT_TIMEOUT` | Быстрый inline-result через прямую ссылку от `yt-dlp` и таймаут извлечения |
+| `INLINE_CACHE_CHAT_ID` | Чат для загрузки inline-видео и получения постоянного Telegram `file_id`; если пусто, используется первый `ADMIN_IDS` |
+| `INLINE_MAX_CONCURRENT` | Число одновременных фоновых подготовок inline-видео |
+| `INLINE_CACHE_TTL` | Срок хранения готового `file_id` в SQLite, в секундах |
+| `INLINE_ERROR_TTL` | Пауза перед повторной подготовкой URL после ошибки |
+| `INLINE_REQUEST_TTL` | Срок жизни кнопок проверки и deep-link токенов |
+| `INLINE_PREPARE_TIMEOUT` | Максимальное ожидание фоновой подготовки при обновлении статуса |
+| `INLINE_DEBOUNCE_MS` | Задержка перед запуском подготовки, чтобы не скачивать недописанный URL |
 | `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
 | `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |
@@ -230,4 +241,5 @@ sudo systemctl enable resave
 - Если `ffmpeg` не установлен, часть медиавозможностей может быть недоступна.
 - Бот больше не устанавливает зависимости на лету: перед запуском нужно явно выполнить `pip install -r requirements.txt`.
 - Обычные плейлисты ставятся в очередь автоматически в среднем качестве, если пользователь укладывается в лимиты.
-- Для автоматической замены inline-заглушки на видео включите inline feedback у @BotFather: `/setinlinefeedback` → ваш бот → `1/10`. Если Telegram не пришлет feedback-событие, кнопка `Подготовить` в заглушке запустит замену вручную.
+- Inline query отвечает сразу. При первом запросе видео готовится в фоне; кнопка `Обновить результаты` повторно открывает picker. После подготовки Telegram `file_id` хранится в SQLite и следующие запросы сразу возвращают `InlineQueryResultCachedVideo`.
+- Inline feedback у BotFather необязателен. Если он включён, отправленный статус обновится автоматически; без feedback доступна кнопка `Проверить готовность`.
