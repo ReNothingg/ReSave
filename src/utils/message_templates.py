@@ -40,6 +40,14 @@ class MessageTemplate:
     def format_inline_caption(title: str, url: str) -> str:
         safe_title = MessageTemplate._escape_text(title)
         return f"🎬 <b>{safe_title}</b>\n\n{MessageTemplate._format_original_link(url)}\n\n⚡ @ReSafeBot"
+
+    @staticmethod
+    def format_tiktok_photo_caption(url: str, count: int = 1) -> str:
+        suffix = f" ({count} шт.)" if count > 1 else ""
+        return (
+            f"🖼️ <b>Фото из TikTok</b>{suffix}\n\n"
+            f"{MessageTemplate._format_original_link(url)}\n\n⚡ @ReSafeBot"
+        )
     
     @staticmethod
     def format_thumbnail_caption(title: str, url: str, width: Optional[int] = None, height: Optional[int] = None) -> str:

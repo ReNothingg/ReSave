@@ -20,6 +20,7 @@ from .media_assets import (
     convert_to_gif_and_send,
     download_and_send_subtitles,
     download_and_send_thumbnail,
+    download_and_send_tiktok_photos,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,10 @@ def handle_download_task(task, bot, temp_dir):
 
         if task.action == "thumbnail":
             download_and_send_thumbnail(task, bot, temp_dir)
+            return
+
+        if task.action == "tiktok_photo":
+            download_and_send_tiktok_photos(task, bot, temp_dir)
             return
 
         retry_manager = get_smart_retry_manager(DOWNLOAD_RETRY_CONFIG)

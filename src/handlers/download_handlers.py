@@ -719,6 +719,23 @@ def register_download_handlers(router: Router, sync_bot):
                 return
 
             url = corrected_url or extracted_url or raw_query
+            from ..core.tiktok_photo_handler import is_tiktok_photo_url
+
+            if is_tiktok_photo_url(url):
+                result = inline_article(
+                    status="tiktok_photo",
+                    title="Фото-пост откройте в ReSave",
+                    description="TikTok photo скачивается напрямую через бота",
+                    message_text=f"Откройте @ReSafeBot и отправьте ссылку:\n{url}",
+                )
+                await answer_inline_query(
+                    results=[result],
+                    cache_time=1,
+                    is_personal=True,
+                    button=open_bot_button(url),
+                )
+                return
+
             direct_result = None
             direct_capture: dict = {}
             if config.INLINE_DIRECT_RESULTS_ENABLED:
@@ -910,6 +927,7 @@ def register_download_handlers(router: Router, sync_bot):
             return
 
         url = corrected_url or extracted_url
+        from ..core.tiktok_photo_handler import is_tiktok_photo_url
 
         if message.chat.type in {"group", "supergroup"}:
             logger.info("Получена ссылка в группе %s: %s", message.chat.id, url)
@@ -921,6 +939,27 @@ def register_download_handlers(router: Router, sync_bot):
                     message.message_id,
                 )
             )
+            return
+
+        if is_tiktok_photo_url(url):
+            status_message = await message.reply(
+                ui_manager.format_panel(
+                    "TikTok photo",
+                    ["Добавляю фото-пост в очередь."],
+                    icon="🖼️",
+                )
+            )
+            try:
+                _download_manager.add_task(
+                    url=url,
+                    chat_id=message.chat.id,
+                    message_id=status_message.message_id,
+                    info={"title": "TikTok photo", "duration": None},
+                    action="tiktok_photo",
+                    reply_to_id=message.message_id,
+                )
+            except ValueError:
+                await status_message.edit_text(_build_download_limit_text(message.chat.id))
             return
 
         if metadata.get("fixed"):

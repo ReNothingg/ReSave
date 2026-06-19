@@ -63,6 +63,20 @@ def build_playlist_queued_text(info: dict, queued_count: int) -> str:
 
 def handle_group_download(url: str, chat_id: int, message_id: int, download_manager):
     try:
+        from ..core.tiktok_photo_handler import is_tiktok_photo_url
+
+        if is_tiktok_photo_url(url):
+            download_manager.add_task(
+                url=url,
+                chat_id=chat_id,
+                message_id=message_id,
+                info={"title": "TikTok photo", "duration": None},
+                action="tiktok_photo",
+                reply_to_id=message_id,
+                silent_mode=True,
+            )
+            return
+
         import yt_dlp
 
         ydl_opts = {
@@ -112,7 +126,9 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
             silent_mode=True,
         )
     except Exception as exc:
-        logger.error("Ошибка при обработке ссылки из группы %s: %s", chat_id, exc)
+        # A group may contain arbitrary links. Unsupported or protected pages are
+        # expected input, not an application failure.
+        logger.info("Ссылка из группы %s не поддерживается: %s", chat_id, exc)
 
 
 def extract_video_info(

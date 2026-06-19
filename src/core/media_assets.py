@@ -9,6 +9,7 @@ from pathlib import Path
 
 import requests
 import yt_dlp
+from aiogram.types import BufferedInputFile, InputMediaPhoto
 from PIL import Image
 
 import config
@@ -23,6 +24,73 @@ from .download_support import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def download_and_send_tiktok_photos(task, bot, temp_dir):
+    from .tiktok_photo_handler import download_tiktok_photos
+
+    work_dir = ensure_task_work_dir(task, temp_dir)
+    if not task.silent_mode:
+        bot.edit_message_text(
+            "🖼️ Скачиваю фото из TikTok...",
+            task.chat_id,
+            task.message_id,
+        )
+
+    photo_paths = download_tiktok_photos(task.url, work_dir)
+    caption = MessageTemplate.format_tiktok_photo_caption(task.url, len(photo_paths))
+    total_size = sum(path.stat().st_size for path in photo_paths)
+
+    if len(photo_paths) == 1:
+        bot.send_photo(
+            task.chat_id,
+            str(photo_paths[0]),
+            caption=caption,
+            parse_mode="HTML",
+            reply_to_message_id=task.reply_to_id,
+            timeout=120,
+        )
+    else:
+        # Telegram accepts at most 10 items in one media group.
+        for offset in range(0, len(photo_paths), 10):
+            chunk = photo_paths[offset:offset + 10]
+            if len(chunk) == 1:
+                bot.send_photo(
+                    task.chat_id,
+                    str(chunk[0]),
+                    caption=caption if offset == 0 else None,
+                    parse_mode="HTML" if offset == 0 else None,
+                    reply_to_message_id=task.reply_to_id if offset == 0 else None,
+                    timeout=120,
+                )
+                continue
+
+            media = []
+            for index, path in enumerate(chunk):
+                media.append(
+                    InputMediaPhoto(
+                        media=BufferedInputFile(path.read_bytes(), filename=path.name),
+                        caption=caption if offset == 0 and index == 0 else None,
+                        parse_mode="HTML" if offset == 0 and index == 0 else None,
+                    )
+                )
+            bot.send_media_group(
+                task.chat_id,
+                media,
+                reply_to_message_id=task.reply_to_id if offset == 0 else None,
+                timeout=180,
+            )
+
+    record_download_success(
+        task.chat_id,
+        action="tiktok_photo",
+        file_size_mb=total_size / (1024 * 1024),
+    )
+    if not task.silent_mode:
+        try:
+            bot.delete_message(task.chat_id, task.message_id)
+        except Exception:
+            pass
 
 
 def _ffmpeg_location() -> str | None:

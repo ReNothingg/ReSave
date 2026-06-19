@@ -25,7 +25,7 @@ def fetch_video_info(url):
             return info
 
     except Exception as e:
-        logger.error(f"Ошибка получения информации о видео: {e}")
+        logger.info("Ссылка не поддерживается или недоступна: %s", e)
         return None
 
 
