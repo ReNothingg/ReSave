@@ -10,15 +10,6 @@ cookie_path = config.COOKIES_FILE
 
 def fetch_video_info(url):
     try:
-        if "tiktok.com" in url and "/photo/" in url:
-            return {
-                'title': 'TikTok фото',
-                'thumbnail': 'https://cdn-icons-png.flaticon.com/512/3046/3046121.png',
-                'duration': None,
-                'uploader': 'TikTok',
-                'is_tiktok_photo': True
-            }
-
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,

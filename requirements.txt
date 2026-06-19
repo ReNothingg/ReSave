@@ -2,5 +2,4 @@ aiogram
 yt-dlp
 Pillow
 requests
-gallery-dl
 python-dotenv

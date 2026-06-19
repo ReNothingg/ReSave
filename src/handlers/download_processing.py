@@ -65,18 +65,6 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
     try:
         import yt_dlp
 
-        if "tiktok.com" in url and "/photo/" in url:
-            download_manager.add_task(
-                url=url,
-                chat_id=chat_id,
-                message_id=message_id,
-                info={"title": "TikTok Photo"},
-                action="tiktok_photo",
-                reply_to_id=message_id,
-                silent_mode=True,
-            )
-            return
-
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -142,42 +130,6 @@ def extract_video_info(
     ui_manager = get_ui_manager()
     try:
         from ..core.video_info import fetch_video_info
-
-        if "tiktok.com" in url and "/photo/" in url:
-            if not download_manager.can_add_task(chat_id):
-                bot.edit_message_text(
-                    build_download_limit_text(chat_id),
-                    chat_id,
-                    status_message_id,
-                )
-                return
-
-            bot.edit_message_text(
-                ui_manager.format_panel(
-                    "TikTok фото",
-                    ["Пост распознан. Добавляю фото в очередь."],
-                    icon="🖼️",
-                ),
-                chat_id,
-                status_message_id,
-            )
-            try:
-                download_manager.add_task(
-                    url=url,
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    info={"title": "TikTok Photo"},
-                    action="tiktok_photo",
-                    reply_to_id=user_message_id,
-                    silent_mode=False,
-                )
-            except ValueError:
-                bot.edit_message_text(
-                    build_download_limit_text(chat_id),
-                    chat_id,
-                    status_message_id,
-                )
-            return
 
         info = fetch_video_info(url)
         if not info:

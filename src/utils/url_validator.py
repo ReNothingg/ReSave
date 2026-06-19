@@ -1,32 +1,26 @@
-import re
+import ipaddress
 import logging
+import re
 from typing import Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
 class URLValidator:
-    SUPPORTED_PLATFORMS = {
-        "youtube": [r"youtube\.com", r"youtu\.be"],
-        "tiktok": [r"tiktok\.com"],
-        "instagram": [r"instagram\.com"],
-        "twitter": [r"twitter\.com", r"x\.com"],
-        "facebook": [r"facebook\.com"],
-        "vimeo": [r"vimeo\.com"],
-        "twitch": [r"twitch\.tv"],
-        "reddit": [r"reddit\.com"],
-        "dailymotion": [r"dailymotion\.com"],
-        "pinterest": [r"pinterest\.com"],
-        "linkedin": [r"linkedin\.com"],
-        "soundcloud": [r"soundcloud\.com"],
-    }
-
     def __init__(self):
         self.url_pattern = re.compile(
             r"^https?://",
             re.IGNORECASE
         )
-        self.http_url_finder = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+        self.http_url_finder = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+        self.bare_url_finder = re.compile(
+            r"(?<![@\w])"
+            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+            r"[a-z]{2,63}"
+            r"(?::\d+)?"
+            r"(?:/[^\s<>\"'`]*)?",
+            re.IGNORECASE,
+        )
 
     def validate(self, url: str) -> Tuple[bool, str, dict]:
         if not url or not isinstance(url, str):
@@ -41,29 +35,22 @@ class URLValidator:
                 return False, None, {"error": "Ссылка содержит пробелы"}
 
             corrected = f"https://{url}"
+            if not self._looks_like_url(corrected):
+                return False, None, {"error": "Это не похоже на ссылку"}
 
-            if self._looks_like_url(corrected):
-                platform = self._detect_platform(corrected)
-                if platform == "unknown":
-                    return False, None, {"error": "Платформа не поддерживается"}
-
-                logger.info("Ссылка исправлена: добавлен https:// к %s", url)
-                return True, corrected, {
-                    "fixed": True,
-                    "fix_type": "added_protocol",
-                    "original": url,
-                    "platform": platform,
-                }
+            logger.info("Ссылка исправлена: добавлен https:// к %s", url)
+            return True, corrected, {
+                "fixed": True,
+                "fix_type": "added_protocol",
+                "original": url,
+                "platform": self._detect_platform(corrected),
+            }
 
         if not self._looks_like_url(url):
             return False, None, {"error": "Это не похоже на ссылку"}
 
-        platform = self._detect_platform(url)
-        if platform == "unknown":
-            return False, None, {"error": "Платформа не поддерживается"}
-
         return True, url, {
-            "platform": platform,
+            "platform": self._detect_platform(url),
             "valid": True
         }
 
@@ -77,34 +64,17 @@ class URLValidator:
 
         stripped = text.strip()
         if any(char.isspace() for char in stripped):
-            return None
+            match = self.bare_url_finder.search(stripped)
+            return self._clean_url(match.group(0)) if match else None
 
-        return self._clean_url(stripped)
+        if self.url_pattern.match(stripped):
+            return self._clean_url(stripped)
 
-    def fix_common_mistakes(self, url: str) -> str:
-        url = url.strip()
+        match = self.bare_url_finder.search(stripped)
+        if match:
+            return self._clean_url(match.group(0))
 
-        fixes = [
-            # YouTube
-            (r"youtube\.com/watch\?v=([^&]+)&.*", r"https://youtube.com/watch?v=\1"),
-            (r"youtu\.be/([^?]+)", r"https://youtu.be/\1"),
-
-            # TikTok
-            (r"tiktok\.com/@([^/]+)/video/(\d+)", r"https://www.tiktok.com/@\1/video/\2"),
-
-            # Instagram
-            (r"instagram\.com/p/([a-zA-Z0-9_-]+)", r"https://www.instagram.com/p/\1/"),
-            (r"instagram\.com/reel/([a-zA-Z0-9_-]+)", r"https://www.instagram.com/reel/\1/"),
-
-            # Twitter
-            (r"twitter\.com/([^/]+)/status/(\d+)", r"https://twitter.com/\1/status/\2"),
-            (r"x\.com/([^/]+)/status/(\d+)", r"https://x.com/\1/status/\2"),
-        ]
-
-        for pattern, replacement in fixes:
-            url = re.sub(pattern, replacement, url, flags=re.IGNORECASE)
-
-        return url
+        return None
 
     def is_valid_url(self, url: str) -> bool:
         is_valid, _, _ = self.validate(url)
@@ -123,10 +93,20 @@ class URLValidator:
             return False
 
         host = parsed.hostname
-        if not host or "." not in host:
+        if not host or not self._host_is_valid(host):
             return False
 
-        if host.startswith(".") or host.endswith(".") or ".." in host:
+        return True
+
+    @staticmethod
+    def _host_is_valid(host: str) -> bool:
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            return True
+        except ValueError:
+            pass
+
+        if "." not in host or host.startswith(".") or host.endswith(".") or ".." in host:
             return False
 
         try:
@@ -138,10 +118,11 @@ class URLValidator:
         if any(not label or len(label) > 63 for label in labels):
             return False
 
-        if not re.fullmatch(r"[a-z0-9.-]+", ascii_host, re.IGNORECASE):
+        top_level = labels[-1]
+        if len(top_level) < 2 or top_level.isdigit():
             return False
 
-        return True
+        return bool(re.fullmatch(r"[a-z0-9.-]+", ascii_host, re.IGNORECASE))
 
     @staticmethod
     def _clean_url(url: str) -> str:
@@ -157,68 +138,10 @@ class URLValidator:
         return url
 
     def _detect_platform(self, url: str) -> str:
-        url_lower = url.lower()
-
-        for platform, patterns in self.SUPPORTED_PLATFORMS.items():
-            for pattern in patterns:
-                if re.search(pattern, url_lower):
-                    return platform
-
-        return "unknown"
-
-    def suggest_fixes(self, invalid_url: str) -> list:
-        suggestions = []
-
-        # Попытка 1: добавить https://
-        if not invalid_url.lower().startswith("http"):
-            suggestion = f"https://{invalid_url}"
-            if self._looks_like_url(suggestion):
-                suggestions.append({
-                    "url": suggestion,
-                    "reason": "Добавлен протокол https://"
-                })
-
-        # Попытка 2: добавить www.
-        if "www." not in invalid_url:
-            suggestion = invalid_url.replace("://", "://www.", 1)
-            if self._looks_like_url(suggestion):
-                suggestions.append({
-                    "url": suggestion,
-                    "reason": "Добавлено www."
-                })
-
-        return suggestions
-
-    def extract_video_id(self, url: str, platform: str = None) -> str:
-        if not platform:
-            platform = self._detect_platform(url)
-
-        if platform == "youtube":
-            match = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([^&?\s]+)", url)
-            if match:
-                return match.group(1)
-
-        elif platform == "tiktok":
-            match = re.search(r"/video/(\d+)", url)
-            if match:
-                return match.group(1)
-
-        elif platform == "instagram":
-            match = re.search(r"(?:/p/|/reel/)([a-zA-Z0-9_-]+)", url)
-            if match:
-                return match.group(1)
-
-        elif platform == "twitter" or platform == "x":
-            match = re.search(r"/status/(\d+)", url)
-            if match:
-                return match.group(1)
-
-        elif platform == "vimeo":
-            match = re.search(r"vimeo\.com/(\d+)", url)
-            if match:
-                return match.group(1)
-
-        return None
+        try:
+            return urlsplit(url).hostname or "generic"
+        except ValueError:
+            return "generic"
 
 
 _url_validator = None

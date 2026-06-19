@@ -4,6 +4,7 @@ import os
 import shutil
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,14 +13,15 @@ from aiogram import Bot, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
+    ChosenInlineResult,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
-    InlineQueryResultCachedVideo,
     InlineQueryResultVideo,
     InlineQueryResultsButton,
     InputTextMessageContent,
+    InputMediaVideo,
     Message,
 )
 
@@ -29,7 +31,7 @@ from ..core.access import (
     build_playlist_limit_error,
     collect_playlist_entries,
 )
-from ..core.models import InlineQuery as InlineQueryCacheItem
+from ..core.download_support import describe_work_dir, find_completed_files
 from .download_processing import (
     extract_video_info as _extract_video_info,
     handle_group_download as _handle_group_download,
@@ -43,38 +45,36 @@ logger = logging.getLogger(__name__)
 _download_manager = None
 
 
-INLINE_NETWORK_ERROR_KEYWORDS = (
-    "timeout",
-    "timed out",
-    "ssl",
-    "handshake",
-    "transporterror",
-    "connection",
-    "temporarily unavailable",
-    "try again",
-    "502",
-    "503",
-    "504",
-)
-
-
-INLINE_UPLOAD_ERROR_KEYWORDS = (
-    "failed to decode object",
-    "jsondecodeerror",
-    "broken pipe",
-    "connection reset",
-    "server disconnected",
-    "can't initiate conversation",
-    "bot was blocked",
-    "forbidden",
-)
-
-
 INLINE_THUMBNAIL_URL = "https://raw.githubusercontent.com/ReNothingg/ReNothingg/refs/heads/main/main.jpg"
 INLINE_START_LINK_TTL = 15 * 60
+INLINE_PREPARATION_TTL = 10 * 60
+INLINE_READY_CACHE_TTL = 6 * 60 * 60
+INLINE_ERROR_CACHE_TTL = 20 * 60
 
 _inline_start_links: dict[str, tuple[str, float]] = {}
 _inline_start_links_lock = threading.Lock()
+
+
+@dataclass
+class InlinePreparation:
+    url: str
+    user_id: int
+    info: dict | None = None
+    direct_media_url: str | None = None
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class InlineMediaCacheItem:
+    url: str
+    user_id: int
+    status: str = "downloading"
+    info: dict | None = None
+    file_id: str | None = None
+    direct_media_url: str | None = None
+    error: str | None = None
+    pending_inline_message_ids: set[str] = field(default_factory=set)
+    updated_at: float = field(default_factory=time.time)
 
 
 def _prune_inline_start_links_locked(now: float | None = None) -> None:
@@ -241,16 +241,6 @@ def _youtube_resolution_buttons(
     return rows
 
 
-def _is_inline_network_error(exc: Exception) -> bool:
-    error_text = str(exc).lower()
-    return any(keyword in error_text for keyword in INLINE_NETWORK_ERROR_KEYWORDS)
-
-
-def _is_inline_upload_error(exc: Exception) -> bool:
-    error_text = str(exc).lower()
-    return any(keyword in error_text for keyword in INLINE_UPLOAD_ERROR_KEYWORDS)
-
-
 def _is_expired_inline_query_error(exc: Exception) -> bool:
     error_text = str(exc).lower()
     return (
@@ -263,14 +253,38 @@ def _is_expired_inline_query_error(exc: Exception) -> bool:
 def register_download_handlers(router: Router, sync_bot):
     ui_manager = get_ui_manager()
     video_info_cache: dict[int, dict] = {}
-    inline_queries: dict[str, InlineQueryCacheItem] = {}
-    inline_cache_lock = threading.Lock()
-    inline_jobs: set[asyncio.Task] = set()
+    inline_preparations: dict[str, InlinePreparation] = {}
+    inline_media_cache: dict[str, InlineMediaCacheItem] = {}
+    inline_jobs: dict[str, asyncio.Task] = {}
 
     def open_bot_button(url: str | None = None) -> InlineQueryResultsButton:
         return InlineQueryResultsButton(
             text="Открыть ReSave",
             start_parameter=create_inline_start_parameter(url) if url else "start",
+        )
+
+    def inline_open_markup(url: str, result_id: str | None = None) -> InlineKeyboardMarkup:
+        token = create_inline_start_parameter(url)
+        rows: list[list[InlineKeyboardButton]] = []
+        if result_id:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Подготовить",
+                        callback_data=f"inline_prepare_{result_id}",
+                    )
+                ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Открыть ReSave",
+                    url=f"https://t.me/ReSafeBot?start={token}",
+                )
+            ]
+        )
+        return InlineKeyboardMarkup(
+            inline_keyboard=rows
         )
 
     def inline_article(
@@ -279,6 +293,7 @@ def register_download_handlers(router: Router, sync_bot):
         title: str,
         description: str,
         message_text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
     ) -> InlineQueryResultArticle:
         return InlineQueryResultArticle(
             id=f"{status}_{uuid4().hex[:8]}",
@@ -286,25 +301,224 @@ def register_download_handlers(router: Router, sync_bot):
             description=description,
             input_message_content=InputTextMessageContent(message_text=message_text),
             thumbnail_url=INLINE_THUMBNAIL_URL,
+            reply_markup=reply_markup,
         )
 
-    def cached_video_result(item: InlineQueryCacheItem, url: str) -> InlineQueryResultCachedVideo:
-        info = item.info or {}
-        title = info.get("title", "Видео")
-        return InlineQueryResultCachedVideo(
-            id=f"cached_{uuid4().hex[:8]}",
-            video_file_id=item.file_id or "",
-            title=title,
-            description="Готово к отправке",
-            caption=MessageTemplate.format_inline_caption(title, url),
-            parse_mode="HTML",
+    def prune_inline_state() -> None:
+        now = time.time()
+        for result_id, item in list(inline_preparations.items()):
+            if now - item.created_at > INLINE_PREPARATION_TTL:
+                inline_preparations.pop(result_id, None)
+
+        for url, item in list(inline_media_cache.items()):
+            ttl = INLINE_READY_CACHE_TTL if item.status == "ready" else INLINE_ERROR_CACHE_TTL
+            if now - item.updated_at > ttl and url not in inline_jobs:
+                inline_media_cache.pop(url, None)
+
+    def cache_chat_id_for(user_id: int) -> int:
+        if config.INLINE_CACHE_CHAT_ID:
+            return config.INLINE_CACHE_CHAT_ID
+        if config.ADMIN_IDS:
+            return config.ADMIN_IDS[0]
+        return user_id
+
+    def build_loading_inline_result(result_id: str, url: str) -> InlineQueryResultArticle:
+        return InlineQueryResultArticle(
+            id=result_id,
+            title="Скачать и заменить здесь",
+            description="Сначала отправлю заглушку, потом заменю ее видео",
+            input_message_content=InputTextMessageContent(
+                message_text=ui_manager.format_panel(
+                    "Скачиваю видео",
+                    [
+                        "Видео появится здесь после загрузки.",
+                        "",
+                        url,
+                    ],
+                    icon="⏳",
+                )
+            ),
+            thumbnail_url=INLINE_THUMBNAIL_URL,
+            reply_markup=inline_open_markup(url, result_id),
         )
+
+    def build_inline_video_media(info: dict, media: str, url: str) -> InputMediaVideo:
+        return InputMediaVideo(
+            media=media,
+            caption=MessageTemplate.format_inline_caption(info.get("title", "Видео"), url),
+            parse_mode="HTML",
+            width=info.get("width") if isinstance(info.get("width"), int) else None,
+            height=info.get("height") if isinstance(info.get("height"), int) else None,
+            duration=info.get("duration") if isinstance(info.get("duration"), int) else None,
+            supports_streaming=True,
+        )
+
+    async def edit_inline_message_to_error(
+        bot: Bot,
+        inline_message_id: str,
+        url: str,
+        text: str,
+    ) -> None:
+        try:
+            await bot.edit_message_text(
+                inline_message_id=inline_message_id,
+                text=ui_manager.format_panel(
+                    "Не удалось подготовить видео",
+                    [text, "", url],
+                    icon="❌",
+                ),
+                reply_markup=inline_open_markup(url),
+            )
+        except TelegramBadRequest as exc:
+            logger.warning("Inline error edit rejected: %s", exc)
+
+    async def edit_inline_message_to_video(
+        bot: Bot,
+        inline_message_id: str,
+        item: InlineMediaCacheItem,
+    ) -> None:
+        media = item.file_id or item.direct_media_url
+        if not media or not item.info:
+            await edit_inline_message_to_error(
+                bot,
+                inline_message_id,
+                item.url,
+                item.error or "Файл не был загружен в кеш Telegram.",
+            )
+            return
+
+        try:
+            await bot.edit_message_media(
+                inline_message_id=inline_message_id,
+                media=build_inline_video_media(item.info, media, item.url),
+                reply_markup=inline_open_markup(item.url),
+            )
+        except TelegramBadRequest as exc:
+            logger.warning("Inline media edit rejected: %s", exc)
+            await edit_inline_message_to_error(
+                bot,
+                inline_message_id,
+                item.url,
+                "Telegram не принял замену inline-сообщения. Откройте ссылку в боте.",
+            )
+
+    def prepare_inline_cached_video(url: str, user_id: int) -> tuple[dict, str]:
+        import yt_dlp
+
+        inline_dir = Path(config.TEMP_DIR) / f"inline_{user_id}_{int(time.time())}_{uuid4().hex[:8]}"
+        inline_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(inline_dir / "media")
+        try:
+            info_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "extract_flat": False,
+                "skip_download": True,
+                "socket_timeout": 15,
+                "retries": 2,
+                "extractor_retries": 2,
+                "cookiefile": config.COOKIES_FILE,
+                "nocheckcertificate": True,
+            }
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+            if not info:
+                raise RuntimeError("yt-dlp не вернул информацию о видео.")
+            if info.get("_type") == "playlist":
+                raise RuntimeError("Плейлисты в inline не скачиваются. Отправьте ссылку боту напрямую.")
+
+            duration_error = build_duration_limit_error(user_id, info.get("duration"))
+            if duration_error:
+                raise RuntimeError(duration_error)
+
+            ydl_params = {
+                "format": "bv*[height<=720]+ba/best[height<=720]/best",
+                "outtmpl": f"{output_path}.%(ext)s",
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "merge_output_format": "mp4",
+                "http_chunk_size": 10485760,
+                "cookiefile": config.COOKIES_FILE,
+                "socket_timeout": 30,
+                "retries": 2,
+                "fragment_retries": 2,
+                "nocheckcertificate": True,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_params) as ydl:
+                ydl.download([url])
+
+            downloaded_files = find_completed_files(inline_dir)
+            if not downloaded_files:
+                logger.error(
+                    "Inline file not found after download. url=%s work_dir=%s contents=%s",
+                    url,
+                    inline_dir,
+                    describe_work_dir(inline_dir),
+                )
+                raise RuntimeError("Файл не найден после скачивания.")
+
+            file_path = max(downloaded_files, key=lambda path: path.stat().st_mtime)
+            file_size = os.path.getsize(file_path)
+            file_size_error = build_file_size_limit_error(user_id, file_size)
+            if file_size_error:
+                raise RuntimeError(file_size_error)
+
+            cache_chat_id = cache_chat_id_for(user_id)
+            message = sync_bot.send_video(
+                cache_chat_id,
+                str(file_path),
+                caption=MessageTemplate.format_inline_caption(info.get("title", "Видео"), url),
+                parse_mode="HTML",
+                supports_streaming=True,
+                timeout=600,
+            )
+            if not message.video:
+                raise RuntimeError("Telegram не вернул file_id видео.")
+
+            try:
+                sync_bot.delete_message(cache_chat_id, message.message_id)
+            except Exception as exc:
+                logger.debug("Не удалось удалить cache-сообщение: %s", exc)
+
+            return info, message.video.file_id
+        finally:
+            shutil.rmtree(inline_dir, ignore_errors=True)
+
+    async def process_inline_media_job(url: str, bot: Bot) -> None:
+        item = inline_media_cache[url]
+        try:
+            info, file_id = await asyncio.to_thread(
+                prepare_inline_cached_video,
+                url,
+                item.user_id,
+            )
+            item.status = "ready"
+            item.info = info
+            item.file_id = file_id
+            item.error = None
+            item.updated_at = time.time()
+            pending_ids = list(item.pending_inline_message_ids)
+            item.pending_inline_message_ids.clear()
+            logger.info("Inline media cache ready: url=%s pending=%s", url, len(pending_ids))
+            for inline_message_id in pending_ids:
+                await edit_inline_message_to_video(bot, inline_message_id, item)
+        except Exception as exc:
+            item.status = "error"
+            item.error = str(exc)
+            item.updated_at = time.time()
+            pending_ids = list(item.pending_inline_message_ids)
+            item.pending_inline_message_ids.clear()
+            logger.exception("Inline media preparation failed: %s", exc)
+            for inline_message_id in pending_ids:
+                await edit_inline_message_to_error(bot, inline_message_id, url, item.error)
+        finally:
+            inline_jobs.pop(url, None)
 
     def _is_http_url(value: str | None) -> bool:
         return bool(value and value.startswith(("http://", "https://")))
-
-    def _is_tiktok_url(value: str) -> bool:
-        return "tiktok.com" in value.lower()
 
     def _direct_thumbnail_url(info: dict) -> str:
         thumbnail = str(info.get("thumbnail") or "")
@@ -336,38 +550,37 @@ def register_download_handlers(router: Router, sync_bot):
             formats.append(info)
 
         too_large_seen = False
-        for require_audio in (True, False):
-            candidates = []
-            for format_info in formats:
-                if not _format_is_direct_mp4(format_info, require_audio=require_audio):
-                    continue
+        candidates = []
+        for format_info in formats:
+            if not _format_is_direct_mp4(format_info, require_audio=True):
+                continue
 
-                height = format_info.get("height")
-                if isinstance(height, int) and height > 720:
-                    continue
+            height = format_info.get("height")
+            if isinstance(height, int) and height > 720:
+                continue
 
-                filesize = _format_filesize(format_info)
-                if filesize and build_file_size_limit_error(user_id, filesize):
-                    too_large_seen = True
-                    continue
+            filesize = _format_filesize(format_info)
+            if filesize and build_file_size_limit_error(user_id, filesize):
+                too_large_seen = True
+                continue
 
-                width = format_info.get("width") if isinstance(format_info.get("width"), int) else 0
-                normalized_height = height if isinstance(height, int) else 0
-                candidates.append((normalized_height, width, format_info))
+            width = format_info.get("width") if isinstance(format_info.get("width"), int) else 0
+            normalized_height = height if isinstance(height, int) else 0
+            candidates.append((normalized_height, width, format_info))
 
-            if candidates:
-                return max(candidates, key=lambda item: (item[0], item[1]))[2]
+        if candidates:
+            return max(candidates, key=lambda item: (item[0], item[1]))[2]
 
         if too_large_seen:
             return {"_inline_status": "too_large"}
         return None
 
-    def build_direct_inline_video_result(url: str, user_id: int):
+    def build_direct_inline_video_result(
+        url: str,
+        user_id: int,
+        capture: dict | None = None,
+    ):
         import yt_dlp
-
-        if _is_tiktok_url(url):
-            logger.info("Inline direct skipped for TikTok URL: user_id=%s url=%s", user_id, url)
-            return None
 
         ydl_opts = {
             "quiet": True,
@@ -433,6 +646,9 @@ def register_download_handlers(router: Router, sync_bot):
             height,
             url,
         )
+        if capture is not None:
+            capture["info"] = info
+            capture["direct_media_url"] = direct_format["url"]
         return InlineQueryResultVideo(
             id=f"direct_{uuid4().hex[:8]}",
             video_url=direct_format["url"],
@@ -447,247 +663,9 @@ def register_download_handlers(router: Router, sync_bot):
             description="Отправить видео напрямую",
         )
 
-    def prune_inline_cache_locked() -> None:
-        now = time.time()
-        for url, item in list(inline_queries.items()):
-            ttl = 6 * 60 * 60 if item.status == "ready" else 20 * 60
-            if now - item.timestamp > ttl:
-                inline_queries.pop(url, None)
-
-    def set_inline_item(
-        url: str,
-        *,
-        query_id: str,
-        user_id: int,
-        status: str,
-        info: dict | None = None,
-        file_id: str | None = None,
-        error: str | None = None,
-    ) -> InlineQueryCacheItem:
-        with inline_cache_lock:
-            prune_inline_cache_locked()
-            existing = inline_queries.get(url)
-            item = InlineQueryCacheItem(
-                query_id=query_id,
-                url=url,
-                user_id=user_id,
-                result_id=(existing.result_id if existing else f"inline_{uuid4().hex[:8]}"),
-                info=info if info is not None else (existing.info if existing else None),
-                task_id=(existing.task_id if existing else None),
-                file_id=file_id if file_id is not None else (existing.file_id if existing else None),
-                timestamp=time.time(),
-                status=status,
-                error=error,
-            )
-            inline_queries[url] = item
-            return item
-
-    def get_inline_item(url: str) -> InlineQueryCacheItem | None:
-        with inline_cache_lock:
-            prune_inline_cache_locked()
-            return inline_queries.get(url)
-
-    def cache_chat_id_for(user_id: int) -> int:
-        return config.INLINE_CACHE_CHAT_ID or (config.ADMIN_IDS[0] if config.ADMIN_IDS else user_id)
-
-    def cleanup_inline_dir(path: str | None) -> None:
-        if path and os.path.isdir(path):
-            shutil.rmtree(path, ignore_errors=True)
-
-    def prepare_inline_video(url: str, user_id: int, query_id: str) -> None:
-        import yt_dlp
-
-        inline_dir = None
-        try:
-            set_inline_item(url, query_id=query_id, user_id=user_id, status="downloading")
-
-            if "tiktok.com" in url and "/photo/" in url:
-                set_inline_item(url, query_id=query_id, user_id=user_id, status="tiktok_photo")
-                return
-
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "extract_flat": False,
-                "skip_download": True,
-                "socket_timeout": 12,
-                "retries": 2,
-                "extractor_retries": 2,
-                "cookiefile": config.COOKIES_FILE,
-                "nocheckcertificate": True,
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-
-            if not info:
-                set_inline_item(url, query_id=query_id, user_id=user_id, status="error")
-                return
-
-            if info.get("_type") == "playlist":
-                set_inline_item(
-                    url,
-                    query_id=query_id,
-                    user_id=user_id,
-                    status="playlist",
-                    info=info,
-                )
-                return
-
-            if build_duration_limit_error(user_id, info.get("duration")):
-                set_inline_item(
-                    url,
-                    query_id=query_id,
-                    user_id=user_id,
-                    status="too_long",
-                    info=info,
-                )
-                return
-
-            inline_dir = os.path.join(
-                config.TEMP_DIR,
-                f"inline_{user_id}_{int(time.time())}_{uuid4().hex[:8]}",
-            )
-            os.makedirs(inline_dir, exist_ok=True)
-            output_path = os.path.join(inline_dir, "media")
-
-            ydl_params = {
-                "format": (
-                    "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
-                    "best[height<=720][ext=mp4]/best"
-                ),
-                "outtmpl": f"{output_path}.%(ext)s",
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": True,
-                "merge_output_format": "mp4",
-                "http_chunk_size": 10485760,
-                "cookiefile": config.COOKIES_FILE,
-                "socket_timeout": 20,
-                "retries": 2,
-                "fragment_retries": 2,
-                "nocheckcertificate": True,
-            }
-
-            with yt_dlp.YoutubeDL(ydl_params) as ydl:
-                ydl.download([url])
-
-            downloaded_files = [
-                path
-                for path in Path(inline_dir).iterdir()
-                if path.is_file() and path.suffix.lower() not in {".part", ".tmp", ".ytdl"}
-            ]
-            if not downloaded_files:
-                set_inline_item(
-                    url,
-                    query_id=query_id,
-                    user_id=user_id,
-                    status="error",
-                    info=info,
-                    error="no_downloaded_file",
-                )
-                return
-
-            file_path = str(max(downloaded_files, key=lambda path: path.stat().st_mtime))
-            file_size = os.path.getsize(file_path)
-            if build_file_size_limit_error(user_id, file_size):
-                set_inline_item(
-                    url,
-                    query_id=query_id,
-                    user_id=user_id,
-                    status="too_large",
-                    info=info,
-                )
-                return
-
-            cache_chat_id = cache_chat_id_for(user_id)
-            title = info.get("title", "video")
-            caption = MessageTemplate.format_inline_caption(title, url)
-            logger.debug(
-                "Inline background upload: user_id=%s cache_chat_id=%s size=%.1fMB path=%s",
-                user_id,
-                cache_chat_id,
-                file_size / (1024 * 1024),
-                file_path,
-            )
-            message = sync_bot.send_video(
-                cache_chat_id,
-                file_path,
-                caption=caption,
-                parse_mode="HTML",
-                supports_streaming=True,
-                timeout=120,
-            )
-            if not message.video:
-                raise RuntimeError("Telegram did not return video metadata")
-
-            try:
-                sync_bot.delete_message(cache_chat_id, message.message_id)
-            except Exception:
-                logger.debug("Не удалось удалить временное inline-сообщение")
-
-            set_inline_item(
-                url,
-                query_id=query_id,
-                user_id=user_id,
-                status="ready",
-                info=info,
-                file_id=message.video.file_id,
-            )
-            logger.info("Inline cache ready: user_id=%s url=%s", user_id, url)
-        except Exception as exc:
-            logger.exception("Inline background job failed: %s", exc)
-            status = "network_error" if _is_inline_network_error(exc) else "upload_error"
-            if not _is_inline_upload_error(exc) and status != "network_error":
-                status = "error"
-            set_inline_item(
-                url,
-                query_id=query_id,
-                user_id=user_id,
-                status=status,
-                error=str(exc),
-            )
-        finally:
-            cleanup_inline_dir(inline_dir)
-
-    def schedule_inline_job(url: str, user_id: int, query_id: str) -> None:
-        item = get_inline_item(url)
-        if item and item.status in {"pending", "downloading", "ready"}:
-            return
-
-        set_inline_item(url, query_id=query_id, user_id=user_id, status="pending")
-        task = asyncio.create_task(asyncio.to_thread(prepare_inline_video, url, user_id, query_id))
-        inline_jobs.add(task)
-
-        def on_done(done_task: asyncio.Task) -> None:
-            inline_jobs.discard(done_task)
-            try:
-                done_task.result()
-            except Exception as exc:
-                logger.exception("Inline worker task crashed: %s", exc)
-
-        task.add_done_callback(on_done)
-
-    async def wait_for_inline_resolution(url: str) -> InlineQueryCacheItem | None:
-        deadline = time.monotonic() + config.INLINE_READY_WAIT_TIMEOUT
-        terminal_statuses = {
-            "ready",
-            "error",
-            "network_error",
-            "upload_error",
-            "too_long",
-            "too_large",
-            "playlist",
-            "tiktok_photo",
-        }
-        item = get_inline_item(url)
-        while item and item.status not in terminal_statuses and time.monotonic() < deadline:
-            await asyncio.sleep(0.2)
-            item = get_inline_item(url)
-        return item
-
     async def inline_query_handler(inline_query: InlineQuery, bot: Bot):
-        query_text = (inline_query.query or "").strip()
+        prune_inline_state()
+        raw_query = (inline_query.query or "").strip()
         user_id = inline_query.from_user.id
 
         async def answer_inline_query(**kwargs) -> bool:
@@ -701,19 +679,14 @@ def register_download_handlers(router: Router, sync_bot):
                 raise
 
         try:
-            if not query_text:
+            if not raw_query:
                 result = inline_article(
                     status="help",
                     title="ReSave - скачать видео",
                     description="Введите ссылку после @ReSafeBot",
                     message_text=ui_manager.format_panel(
                         "ReSave inline",
-                        [
-                            "Введите ссылку после @ReSafeBot.",
-                            "",
-                            "Если видео уже готово, я покажу его сразу.",
-                            "Если нет, начну подготовку и попрошу повторить запрос.",
-                        ],
+                        ["Введите ссылку после @ReSafeBot."],
                         icon="⚡",
                     ),
                 )
@@ -721,283 +694,190 @@ def register_download_handlers(router: Router, sync_bot):
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                )
-                return
-
-            if not query_text.startswith(("http://", "https://")):
-                await answer_inline_query(
-                    results=[],
-                    cache_time=1,
-                    is_personal=True,
+                    button=open_bot_button(),
                 )
                 return
 
             from ..utils.url_validator import get_url_validator
 
             url_validator = get_url_validator()
-            is_valid, corrected_url, _ = url_validator.validate(query_text)
+            extracted_url = url_validator.extract_url(raw_query)
+            is_valid, corrected_url, _ = url_validator.validate(extracted_url or raw_query)
             if not is_valid:
-                await answer_inline_query(
-                    results=[],
-                    cache_time=1,
-                    is_personal=True,
-                )
-                return
-            query_text = corrected_url or query_text
-
-            if not config.INLINE_DOWNLOAD_ENABLED:
                 result = inline_article(
-                    status="open_bot",
-                    title="Откройте ReSave",
-                    description="Большие файлы скачиваются напрямую в боте",
-                    message_text=(
-                        "📦 Большие файлы лучше скачивать напрямую в боте.\n\n"
-                        "Откройте @ReSafeBot и отправьте ссылку:\n"
-                        f"{query_text}"
-                    ),
+                    status="invalid_url",
+                    title="Вставьте ссылку на видео",
+                    description="Подойдёт любой http/https URL, который умеет yt-dlp",
+                    message_text="Вставьте ссылку после @ReSafeBot.",
                 )
                 await answer_inline_query(
                     results=[result],
                     cache_time=1,
                     is_personal=True,
-                    button=open_bot_button(query_text),
+                    button=open_bot_button(),
                 )
                 return
 
-            item = get_inline_item(query_text)
-            if item and item.status == "ready" and item.file_id:
-                await answer_inline_query(
-                    results=[cached_video_result(item, query_text)],
-                    cache_time=300,
-                    is_personal=True,
-                )
-                return
-
+            url = corrected_url or extracted_url or raw_query
+            direct_result = None
+            direct_capture: dict = {}
             if config.INLINE_DIRECT_RESULTS_ENABLED:
                 try:
                     direct_result = await asyncio.wait_for(
                         asyncio.to_thread(
                             build_direct_inline_video_result,
-                            query_text,
+                            url,
                             user_id,
+                            direct_capture,
                         ),
                         timeout=config.INLINE_EXTRACT_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("Inline direct extraction timed out: user_id=%s url=%s", user_id, query_text)
-                    direct_result = None
+                    logger.info("Inline direct extraction timed out: user_id=%s url=%s", user_id, url)
                 except Exception as exc:
-                    logger.warning("Inline direct extraction failed: %s", exc)
-                    direct_result = None
+                    logger.info("Inline direct extraction unavailable for %s: %s", url, exc)
 
-                if direct_result:
-                    try:
-                        await answer_inline_query(
-                            results=[direct_result],
-                            cache_time=60,
-                            is_personal=True,
-                        )
-                        return
-                    except TelegramBadRequest as exc:
-                        if _is_expired_inline_query_error(exc):
-                            logger.warning("Inline query expired before direct answer: %s", exc)
-                            return
-                        logger.warning("Telegram rejected direct inline video: %s", exc)
-
-            if not config.INLINE_BACKGROUND_CACHE_ENABLED:
-                logger.info(
-                    "Inline direct unavailable; returning open-bot button only: user_id=%s url=%s",
-                    user_id,
-                    query_text,
-                )
-                await answer_inline_query(
-                    results=[],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if not item:
-                schedule_inline_job(query_text, user_id, inline_query.id)
-                item = get_inline_item(query_text)
-
-            if item and item.status in {"pending", "downloading"}:
-                item = await wait_for_inline_resolution(query_text)
-                if item and item.status == "ready" and item.file_id:
-                    await answer_inline_query(
-                        results=[cached_video_result(item, query_text)],
-                        cache_time=300,
-                        is_personal=True,
-                    )
-                    return
-
-            status = item.status if item else "pending"
-            info = item.info if item else None
-
-            if status in {"pending", "downloading"}:
-                result = inline_article(
-                    status="preparing",
-                    title="Готовлю видео",
-                    description="Повторите inline-запрос через несколько секунд",
-                    message_text=(
-                        "Видео готовится для inline-отправки.\n\n"
-                        "Повторите этот же inline-запрос через несколько секунд:\n"
-                        f"{query_text}"
-                    ),
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "network_error":
-                result = inline_article(
-                    status="network",
-                    title="Не удалось подключиться",
-                    description="Источник не ответил вовремя",
-                    message_text=(
-                        "Не удалось загрузить видео из-за сетевого таймаута.\n\n"
-                        "Попробуйте повторить inline-запрос или отправьте ссылку в @ReSafeBot:\n"
-                        f"{query_text}"
-                    ),
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "upload_error":
-                title = info.get("title", "Видео") if info else "Видео"
-                result = inline_article(
-                    status="upload_error",
-                    title="Inline-видео не подготовлено",
-                    description="Отправьте ссылку боту напрямую",
-                    message_text=(
-                        f'Не удалось подготовить inline-видео "{title}".\n\n'
-                        "Откройте @ReSafeBot и отправьте ссылку напрямую:\n"
-                        f"{query_text}"
-                    ),
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "too_long":
-                limit_text = build_duration_limit_error(
-                    user_id,
-                    info.get("duration") if info else None,
-                ) or "Видео превышает допустимую длительность."
-                result = inline_article(
-                    status="limit",
-                    title="Видео слишком длинное",
-                    description="Откройте бота, чтобы скачать с подсказками",
-                    message_text=limit_text,
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "playlist":
-                playlist_text = build_playlist_limit_error(
-                    user_id,
-                    len(collect_playlist_entries(info or {})),
-                ) or "Плейлист лучше отправить напрямую в @ReSafeBot."
-                result = inline_article(
-                    status="playlist",
-                    title="Плейлист откройте в боте",
-                    description="Inline-режим рассчитан на одиночные ролики",
-                    message_text=playlist_text,
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "too_large":
-                limit_text = (
-                    build_file_size_limit_error(user_id, config.BOT_API_UPLOAD_LIMIT + 1)
-                    or "Видео превышает допустимый размер."
-                )
-                result = inline_article(
-                    status="size_limit",
-                    title="Файл слишком большой",
-                    description="Откройте бота, чтобы скачать с подсказками",
-                    message_text=limit_text,
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            if status == "tiktok_photo":
-                result = inline_article(
-                    status="tiktok_photo",
-                    title="TikTok фото откройте в боте",
-                    description="Inline-режим не отправляет фото-посты",
-                    message_text=(
-                        "TikTok фото-пост лучше скачать напрямую в @ReSafeBot.\n\n"
-                        f"Отправьте эту ссылку боту:\n{query_text}"
-                    ),
-                )
-                await answer_inline_query(
-                    results=[result],
-                    cache_time=1,
-                    is_personal=True,
-                    button=open_bot_button(query_text),
-                )
-                return
-
-            result = inline_article(
-                status="error",
-                title="Не удалось загрузить",
-                description="Проверьте ссылку или откройте бота",
-                message_text=(
-                    "Не удалось загрузить видео.\n\n"
-                    f"Попробуйте отправить ссылку в @ReSafeBot:\n{query_text}"
-                ),
+            result_id = f"inline_{uuid4().hex[:24]}"
+            inline_preparations[result_id] = InlinePreparation(
+                url=url,
+                user_id=user_id,
+                info=direct_capture.get("info"),
+                direct_media_url=direct_capture.get("direct_media_url"),
             )
+
+            if direct_result:
+                if isinstance(direct_result, InlineQueryResultVideo):
+                    results = [
+                        direct_result,
+                        build_loading_inline_result(result_id, url),
+                    ]
+                else:
+                    results = [direct_result]
+            else:
+                results = [build_loading_inline_result(result_id, url)]
+
             await answer_inline_query(
-                results=[result],
+                results=results,
                 cache_time=1,
                 is_personal=True,
-                button=open_bot_button(query_text),
             )
         except Exception as exc:
             logger.exception("Critical inline error: %s", exc)
+            fallback = inline_article(
+                status="inline_error",
+                title="Откройте ReSave",
+                description="Inline не успел обработать ссылку",
+                message_text="Откройте @ReSafeBot и отправьте ссылку напрямую.",
+            )
             await answer_inline_query(
-                results=[],
+                results=[fallback],
                 cache_time=1,
                 is_personal=True,
+                button=open_bot_button(),
             )
+
+    async def queue_inline_preparation(
+        *,
+        result_id: str,
+        inline_message_id: str,
+        user_id: int,
+        bot: Bot,
+    ) -> bool:
+        preparation = inline_preparations.get(result_id)
+        if not preparation:
+            return False
+
+        url = preparation.url
+        item = inline_media_cache.get(url)
+        if preparation.info and preparation.direct_media_url and (
+            not item or item.status != "ready"
+        ):
+            item = InlineMediaCacheItem(
+                url=url,
+                user_id=user_id,
+                status="ready",
+                info=preparation.info,
+                direct_media_url=preparation.direct_media_url,
+            )
+            inline_media_cache[url] = item
+            await edit_inline_message_to_video(bot, inline_message_id, item)
+            return True
+
+        if item and item.status == "ready":
+            await edit_inline_message_to_video(bot, inline_message_id, item)
+            return True
+
+        if item and item.status == "error":
+            await edit_inline_message_to_error(
+                bot,
+                inline_message_id,
+                url,
+                item.error or "Предыдущая подготовка завершилась ошибкой.",
+            )
+            return True
+
+        if not item:
+            item = InlineMediaCacheItem(
+                url=url,
+                user_id=user_id,
+                info=preparation.info,
+                direct_media_url=preparation.direct_media_url,
+            )
+            inline_media_cache[url] = item
+
+        item.pending_inline_message_ids.add(inline_message_id)
+        item.updated_at = time.time()
+
+        if url not in inline_jobs:
+            inline_jobs[url] = asyncio.create_task(process_inline_media_job(url, bot))
+        return True
+
+    async def chosen_inline_result_handler(chosen_result: ChosenInlineResult, bot: Bot):
+        prune_inline_state()
+        inline_message_id = chosen_result.inline_message_id
+        if not inline_message_id:
+            logger.warning(
+                "Chosen inline result has no inline_message_id. "
+                "Enable inline feedback in BotFather. result_id=%s",
+                chosen_result.result_id,
+            )
+            return
+
+        await queue_inline_preparation(
+            result_id=chosen_result.result_id,
+            inline_message_id=inline_message_id,
+            user_id=chosen_result.from_user.id,
+            bot=bot,
+        )
+
+    async def handle_inline_prepare_callback(call: CallbackQuery, bot: Bot):
+        if not call.data or not call.inline_message_id:
+            await call.answer("Не вижу inline-сообщение.", show_alert=True)
+            return
+
+        result_id = call.data.removeprefix("inline_prepare_")
+        queued = await queue_inline_preparation(
+            result_id=result_id,
+            inline_message_id=call.inline_message_id,
+            user_id=call.from_user.id,
+            bot=bot,
+        )
+        if queued:
+            await call.answer("Готовлю видео.")
+        else:
+            await call.answer("Запрос устарел. Повторите inline-поиск.", show_alert=True)
 
     async def process_url_message(message: Message, text_override: str | None = None):
         from ..utils.url_validator import get_url_validator
 
-        if text_override is None and not message.text:
+        if text_override is None and message.from_user and message.from_user.is_bot:
             return
 
-        text = (text_override if text_override is not None else message.text or "").strip()
+        text = (
+            text_override
+            if text_override is not None
+            else (message.text or message.caption or "")
+        ).strip()
         if not text:
             return
 
@@ -1005,35 +885,28 @@ def register_download_handlers(router: Router, sync_bot):
             return
 
         url_validator = get_url_validator()
-        extracted_url = url_validator.extract_url(text)
+        extracted_url = None
+        if text_override is None:
+            for entity in [*(message.entities or []), *(message.caption_entities or [])]:
+                entity_url = getattr(entity, "url", None)
+                if entity_url:
+                    extracted_url = entity_url
+                    break
+
+        extracted_url = extracted_url or url_validator.extract_url(text)
         is_valid, corrected_url, metadata = url_validator.validate(extracted_url or "")
         if not is_valid:
             if message.chat.type == "private":
-                suggestions = url_validator.suggest_fixes(extracted_url or text)
-                if suggestions:
-                    suggestion_lines = ["Возможно, подойдет один из вариантов:", ""]
-                    for suggestion in suggestions:
-                        suggestion_lines.append(f"• {suggestion['reason']}")
-                        suggestion_lines.append(suggestion["url"])
-                        suggestion_lines.append("")
-                    await message.reply(
-                        ui_manager.format_panel(
-                            "Ссылка не распознана",
-                            suggestion_lines,
-                            icon="🔗",
-                        )
+                await message.reply(
+                    ui_manager.format_panel(
+                        "Ссылка не распознана",
+                        [
+                            "Пришлите обычный URL с http:// или https://.",
+                            "Если источник поддерживается yt-dlp, я попробую скачать видео.",
+                        ],
+                        icon="🔗",
                     )
-                else:
-                    await message.reply(
-                        ui_manager.format_panel(
-                            "Ссылка не распознана",
-                            [
-                                "Пришлите полный URL, который начинается с http:// или https://.",
-                                "Проверьте, что в ссылке нет лишних пробелов.",
-                            ],
-                            icon="🔗",
-                        )
-                    )
+                )
             return
 
         url = corrected_url or extracted_url
@@ -1112,18 +985,13 @@ def register_download_handlers(router: Router, sync_bot):
 
         format_param = int(parts[2]) if action == "res" else None
         url = download_info["url"]
-        action_type = action
-
-        if "tiktok.com" in url and "/photo/" in url:
-            action_type = "tiktok_photo"
-
         try:
             _download_manager.add_task(
                 url=url,
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 info=download_info["info"],
-                action=action_type,
+                action=action,
                 format_param=format_param,
             )
         except ValueError:
@@ -1174,9 +1042,13 @@ def register_download_handlers(router: Router, sync_bot):
             )
 
     router.inline_query.register(inline_query_handler)
+    router.chosen_inline_result.register(chosen_inline_result_handler)
     router.message.register(
         handle_url,
-        lambda message: bool(message.text and not message.text.strip().startswith("/")),
+        lambda message: bool(
+            (message.text or message.caption)
+            and not (message.text or message.caption or "").strip().startswith("/")
+        ),
     )
     router.callback_query.register(
         handle_download,
@@ -1185,6 +1057,10 @@ def register_download_handlers(router: Router, sync_bot):
     router.callback_query.register(
         handle_cancel_all_downloads,
         lambda call: call.data == "cancel_all_downloads",
+    )
+    router.callback_query.register(
+        handle_inline_prepare_callback,
+        lambda call: bool(call.data and call.data.startswith("inline_prepare_")),
     )
     router.callback_query.register(
         handle_cancel,

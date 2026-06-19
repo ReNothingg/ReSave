@@ -20,7 +20,6 @@ from .media_assets import (
     convert_to_gif_and_send,
     download_and_send_subtitles,
     download_and_send_thumbnail,
-    download_and_send_tiktok_photos,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,10 +41,6 @@ def handle_download_task(task, bot, temp_dir):
     try:
         if task.action == "subtitles":
             download_and_send_subtitles(task, bot, temp_dir)
-            return
-
-        if "tiktok.com" in task.url and ("/photo/" in task.url or task.action == "tiktok_photo"):
-            download_and_send_tiktok_photos(task, bot, temp_dir)
             return
 
         if task.action == "thumbnail":
@@ -179,22 +174,8 @@ def _download_and_send_video(task, bot, temp_dir):
     if ffmpeg_location:
         ydl_params["ffmpeg_location"] = ffmpeg_location
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_params) as ydl:
-            ydl.download([task.url])
-    except yt_dlp.utils.DownloadError as exc:
-        if "tiktok.com" not in task.url or "requested format is not available" not in str(exc).lower():
-            raise
-
-        logger.warning("TikTok format fallback for task %s: %s", task.task_id, exc)
-        for leftover in work_dir.iterdir():
-            if leftover.is_file():
-                leftover.unlink(missing_ok=True)
-
-        fallback_params = dict(ydl_params)
-        fallback_params["format"] = "bv*+ba/best"
-        with yt_dlp.YoutubeDL(fallback_params) as ydl:
-            ydl.download([task.url])
+    with yt_dlp.YoutubeDL(ydl_params) as ydl:
+        ydl.download([task.url])
 
     downloaded_files = find_completed_files(work_dir)
     if not downloaded_files:
@@ -238,21 +219,21 @@ def _download_and_send_video(task, bot, temp_dir):
 def _get_format_options(task, output_path):
     if task.action == "best":
         return (
-            "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            "bv*+ba/best",
             [],
             f"{output_path}.%(ext)s",
         )
 
     if task.action == "medium":
         return (
-            "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "bv*[height<=720]+ba/best[height<=720]/best",
             [],
             f"{output_path}.%(ext)s",
         )
 
     if task.action == "low":
         return (
-            "bestvideo[height<=480][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "bv*[height<=480]+ba/best[height<=480]/best",
             [],
             f"{output_path}.%(ext)s",
         )
@@ -266,7 +247,7 @@ def _get_format_options(task, output_path):
 
     if task.action == "gif":
         return (
-            "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best[height<=480]",
+            "bv*[height<=480]+ba/best[height<=480]/best",
             [],
             f"{output_path}.%(ext)s",
         )
@@ -274,7 +255,7 @@ def _get_format_options(task, output_path):
     if task.action == "res" and task.format_param:
         height = int(task.format_param)
         return (
-            f"bestvideo[height={height}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}][vcodec^=avc1]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
+            f"bv*[height={height}]+ba/best[height={height}]/bv*[height<={height}]+ba/best[height<={height}]/best",
             [],
             f"{output_path}.%(ext)s",
         )

@@ -71,18 +71,6 @@ class MessageTemplate:
         caption += "⚡ @ReSafeBot"
         return caption
     
-    @staticmethod
-    def format_tiktok_photo_caption(url: str, count: Optional[int] = None) -> str:
-        if count and count > 1:
-            caption = f"🖼️ <b>Фото из TikTok</b> ({count} шт)\n"
-        else:
-            caption = "🖼️ <b>Фото из TikTok</b>\n"
-        
-        caption += f"\n{MessageTemplate._format_original_link(url)}\n\n"
-        
-        caption += "⚡ @ReSafeBot"
-        return caption
-
 
 class ErrorMessages:    
     # Ошибки, связанные с платформой/видео
@@ -127,10 +115,6 @@ class ErrorMessages:
     GIF_CONVERSION_FAILED = "✨ Не удалось создать GIF. Видео может быть повреждено."
     GIF_FFMPEG_MISSING = "✨ FFmpeg не установлен. GIF недоступен."
     
-    # Ошибки с TikTok
-    TIKTOK_PHOTO_NOT_FOUND = "🖼️ Не удалось найти фото в этом посте. Возможно, это не пост с фото."
-    TIKTOK_DOWNLOAD_FAILED = "🖼️ Ошибка при скачивании фото из TikTok."
-    
     # Ошибки с URL/ссылкой
     INVALID_URL = "🔗 Это не похоже на корректную ссылку на видео."
     MALFORMED_URL = "🔗 Ссылка повреждена или неправильного формата."
@@ -169,7 +153,6 @@ class ErrorMessages:
             ("thumbnail", ErrorMessages.THUMBNAIL_NOT_FOUND),
             ("превью", ErrorMessages.THUMBNAIL_DOWNLOAD_FAILED),
             
-            ("tiktok", ErrorMessages.TIKTOK_DOWNLOAD_FAILED),
             ("gif", ErrorMessages.GIF_CONVERSION_FAILED),
             
             ("invalid", ErrorMessages.INVALID_URL),
