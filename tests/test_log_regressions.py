@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
 
 from aiogram.types import FSInputFile
 
@@ -9,6 +10,7 @@ from src.core.download_handler import _get_format_options
 from src.core.tiktok_photo_handler import is_tiktok_photo_url
 from src.utils.aiogram_bot_adapter import AiogramSyncBotAdapter
 from src.utils.url_validator import URLValidator
+from main import acquire_instance_lock
 
 
 class LogRegressionTests(unittest.TestCase):
@@ -44,6 +46,16 @@ class LogRegressionTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as file_obj:
             prepared = adapter._prepare_file(file_obj.name)
         self.assertIsInstance(prepared, FSInputFile)
+
+    def test_second_bot_instance_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "bot.lock"
+            first_lock = acquire_instance_lock(lock_path)
+            self.assertIsNotNone(first_lock)
+            try:
+                self.assertIsNone(acquire_instance_lock(lock_path))
+            finally:
+                first_lock.close()
 
 
 if __name__ == "__main__":

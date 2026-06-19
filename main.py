@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,6 +53,25 @@ logging.basicConfig(
     handlers=[_file_handler, _stream_handler],
 )
 logger = logging.getLogger(__name__)
+
+
+def acquire_instance_lock(lock_path: str | os.PathLike | None = None):
+    """Hold an advisory process lock for the lifetime of the returned file."""
+    import fcntl
+
+    path = Path(lock_path or (Path(__file__).resolve().parent / ".resave.lock"))
+    lock_file = path.open("a+", encoding="ascii")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
 
 
 async def ensure_bot_api_available(bot: Bot, settings: config.Settings):
@@ -178,6 +198,11 @@ async def run():
 
 
 def main():
+    instance_lock = acquire_instance_lock()
+    if instance_lock is None:
+        logger.warning("ReSave уже запущен; повторный экземпляр завершен")
+        return
+
     try:
         asyncio.run(run())
     except RuntimeError as exc:
@@ -185,6 +210,8 @@ def main():
         raise SystemExit(1)
     except (KeyboardInterrupt, SystemExit):
         logger.info("Завершение работы ReSave...")
+    finally:
+        instance_lock.close()
 
 
 if __name__ == "__main__":

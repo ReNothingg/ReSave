@@ -10,6 +10,9 @@ __pycache__/
 temp_downloads/
 bot.log
 cookies.txt
+.resave.lock
+.telegram-bot-api/
+logs/
 .env
 .env.*
 !.env.example
