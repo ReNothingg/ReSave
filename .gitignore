@@ -11,6 +11,7 @@ temp_downloads/
 bot.log
 cookies.txt
 .resave.lock
+.run_alwaysdata_local_bot_api.lock/
 .telegram-bot-api/
 logs/
 .env
