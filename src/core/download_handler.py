@@ -102,21 +102,21 @@ def handle_download_task(task, bot, temp_dir):
                     ),
                 )
 
-            from ..utils.message_templates import ErrorMessages
+                from ..utils.message_templates import ErrorMessages
 
-            if "ffmpeg" in error_text.lower():
-                if task.action == "gif":
-                    user_message = ErrorMessages.GIF_FFMPEG_MISSING
+                if "ffmpeg" in error_text.lower():
+                    if task.action == "gif":
+                        user_message = ErrorMessages.GIF_FFMPEG_MISSING
+                    else:
+                        user_message = "⚠️ FFmpeg не установлен на сервере. Эта функция временно недоступна."
                 else:
-                    user_message = "⚠️ FFmpeg не установлен на сервере. Эта функция временно недоступна."
-            else:
-                user_message = ErrorMessages.format_error_with_suggestion(error_text)
+                    user_message = ErrorMessages.format_error_with_suggestion(error_text)
 
-            if not task.is_inline and not task.silent_mode:
-                try:
-                    bot.edit_message_text(user_message, task.chat_id, task.message_id)
-                except Exception:
-                    pass
+                if not task.is_inline and not task.silent_mode:
+                    try:
+                        bot.edit_message_text(user_message, task.chat_id, task.message_id)
+                    except Exception:
+                        pass
 
             task.error = str(exc)
             raise
