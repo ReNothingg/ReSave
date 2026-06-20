@@ -10,7 +10,6 @@ from aiogram.types import (
     Message,
 )
 
-from ..core.inline_media import InlineMediaStore
 from .download_processing import (
     extract_video_info as _extract_video_info,
     handle_group_download as _handle_group_download,
@@ -22,37 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 _download_manager = None
-
-
-_inline_link_store: InlineMediaStore | None = None
-
-
-def _get_inline_link_store() -> InlineMediaStore:
-    global _inline_link_store
-    if _inline_link_store is None:
-        _inline_link_store = InlineMediaStore(config.STATS_DB_PATH)
-    return _inline_link_store
-
-
-def create_inline_start_parameter(url: str) -> str:
-    token = _get_inline_link_store().create_request(
-        url,
-        0,
-        ttl=config.INLINE_REQUEST_TTL,
-    )
-    return f"i_{token}"
-
-
-def resolve_inline_start_url(parameter: str | None) -> str | None:
-    if not parameter:
-        return None
-
-    token = parameter.strip().removeprefix("i_")
-    item = _get_inline_link_store().resolve_request(
-        token,
-        ttl=config.INLINE_REQUEST_TTL,
-    )
-    return item[0] if item else None
 
 
 def set_download_manager(manager):
@@ -195,39 +163,26 @@ def register_download_handlers(router: Router, sync_bot):
     ui_manager = get_ui_manager()
     video_info_cache: dict[int, dict] = {}
 
-    from .inline_handlers import register_inline_handlers
-
-    register_inline_handlers(
-        router,
-        sync_bot,
-        create_start_parameter=create_inline_start_parameter,
-    )
-
-    async def process_url_message(message: Message, text_override: str | None = None):
+    async def process_url_message(message: Message):
         from ..utils.url_validator import get_url_validator
 
-        if text_override is None and message.from_user and message.from_user.is_bot:
+        if message.from_user and message.from_user.is_bot:
             return
 
-        text = (
-            text_override
-            if text_override is not None
-            else (message.text or message.caption or "")
-        ).strip()
+        text = (message.text or message.caption or "").strip()
         if not text:
             return
 
-        if text_override is None and text.startswith("/"):
+        if text.startswith("/"):
             return
 
         url_validator = get_url_validator()
         extracted_url = None
-        if text_override is None:
-            for entity in [*(message.entities or []), *(message.caption_entities or [])]:
-                entity_url = getattr(entity, "url", None)
-                if entity_url:
-                    extracted_url = entity_url
-                    break
+        for entity in [*(message.entities or []), *(message.caption_entities or [])]:
+            entity_url = getattr(entity, "url", None)
+            if entity_url:
+                extracted_url = entity_url
+                break
 
         extracted_url = extracted_url or url_validator.extract_url(text)
         is_valid, corrected_url, metadata = url_validator.validate(extracted_url or "")
@@ -418,9 +373,6 @@ def register_download_handlers(router: Router, sync_bot):
         handle_cancel,
         lambda call: bool(call.data and call.data.startswith("cancel_")),
     )
-
-    return process_url_message
-
 
 def handle_group_download(url: str, chat_id: int, message_id: int):
     _handle_group_download(

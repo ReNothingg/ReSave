@@ -176,8 +176,8 @@ async def run():
         set_download_manager(download_manager)
 
         logger.info("Регистрация aiogram-хендлеров...")
-        start_url_handler = register_download_handlers(router, sync_bot)
-        register_command_handlers(router, start_url_handler=start_url_handler)
+        register_download_handlers(router, sync_bot)
+        register_command_handlers(router)
         register_admin_handlers(router)
         dispatcher.include_router(router)
 
@@ -185,7 +185,6 @@ async def run():
 
         logger.info("=" * 50)
         logger.info("ReSave запущен")
-        logger.info("Inline-режим активирован")
         logger.info("Групповой режим активирован")
         logger.info("=" * 50)
 

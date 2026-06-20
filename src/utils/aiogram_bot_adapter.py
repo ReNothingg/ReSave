@@ -9,7 +9,6 @@ from aiogram import Bot
 from aiogram.types import (
     BufferedInputFile,
     FSInputFile,
-    InlineQueryResultsButton,
     ReplyParameters,
 )
 
@@ -139,24 +138,6 @@ class AiogramSyncBotAdapter:
             self.bot.answer_callback_query(
                 callback_query_id=callback_query_id,
                 text=text,
-                **payload,
-            )
-        )
-
-    def answer_inline_query(self, inline_query_id, results, **kwargs):
-        payload = self._normalize_kwargs(kwargs)
-        switch_pm_text = payload.pop("switch_pm_text", None)
-        switch_pm_parameter = payload.pop("switch_pm_parameter", None)
-        if switch_pm_text and switch_pm_parameter and "button" not in payload:
-            payload["button"] = InlineQueryResultsButton(
-                text=switch_pm_text,
-                start_parameter=switch_pm_parameter,
-            )
-
-        return self._call(
-            self.bot.answer_inline_query(
-                inline_query_id=inline_query_id,
-                results=results,
                 **payload,
             )
         )

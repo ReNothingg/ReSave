@@ -112,7 +112,7 @@ def handle_download_task(task, bot, temp_dir):
             else:
                 user_message = ErrorMessages.format_error_with_suggestion(error_text)
 
-            if not task.is_inline and not task.silent_mode:
+            if not task.silent_mode:
                 try:
                     bot.edit_message_text(user_message, task.chat_id, task.message_id)
                 except Exception:
@@ -153,7 +153,7 @@ def _download_and_send_video(task, bot, temp_dir):
     if task.action in {"audio", "gif"} and not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg is not installed on server")
 
-    if not task.is_inline and not task.silent_mode:
+    if not task.silent_mode:
         bot.edit_message_text("⏬ Скачиваю видео...", task.chat_id, task.message_id)
 
     ydl_params = {

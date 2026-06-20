@@ -13,12 +13,8 @@ from ..utils.ui_manager import get_ui_manager
 logger = logging.getLogger(__name__)
 
 
-def register_command_handlers(router: Router, start_url_handler=None):
+def register_command_handlers(router: Router):
     ui_manager = get_ui_manager()
-
-    def get_start_parameter(message: Message) -> str:
-        parts = (message.text or "").split(maxsplit=1)
-        return parts[1].strip() if len(parts) > 1 else ""
 
     async def safe_reply(message: Message, text: str, **kwargs):
         try:
@@ -28,31 +24,6 @@ def register_command_handlers(router: Router, start_url_handler=None):
             return None
 
     async def send_welcome(message: Message):
-        start_parameter = get_start_parameter(message)
-        if start_parameter:
-            from .download_handlers import resolve_inline_start_url
-
-            url = resolve_inline_start_url(start_parameter)
-            if url and start_url_handler:
-                logger.info(
-                    "Запуск загрузки из inline deep link: chat_id=%s url=%s",
-                    message.chat.id,
-                    url,
-                )
-                await start_url_handler(message, url)
-                return
-
-            if start_parameter.startswith("i_"):
-                await safe_reply(
-                    message,
-                    ui_manager.format_panel(
-                        "Inline-ссылка устарела",
-                        ["Вернитесь в чат и нажмите кнопку открытия еще раз."],
-                        icon="⌛",
-                    ),
-                )
-                return
-
         welcome_text = ui_manager.format_panel(
             "ReSave",
             [
@@ -62,8 +33,6 @@ def register_command_handlers(router: Router, start_url_handler=None):
                 "1. Отправьте ссылку на видео.",
                 "2. Выберите качество или формат.",
                 "3. Получите готовый файл.",
-                "",
-                "Inline-режим: введите @ReSafeBot и ссылку в любом чате.",
                 "",
                 "Платформы: YouTube, TikTok, Instagram, X/Twitter, Facebook, Vimeo, Twitch, Reddit.",
             ],
@@ -85,11 +54,6 @@ def register_command_handlers(router: Router, start_url_handler=None):
                 "1. Добавьте бота в группу.",
                 "2. Отправьте ссылку.",
                 "3. Бот скачает видео в среднем качестве.",
-                "",
-                "Inline",
-                "1. Введите @ReSafeBot [ссылка].",
-                "2. Дождитесь результата.",
-                "3. Отправьте готовое видео в чат.",
                 "",
                 "Если ссылка не распознается, пришлите полный URL с https://.",
             ],

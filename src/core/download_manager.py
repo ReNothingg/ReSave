@@ -66,9 +66,6 @@ class DownloadManager:
         info,
         action,
         format_param=None,
-        is_inline=False,
-        inline_query_id=None,
-        inline_result_id=None,
         reply_to_id=None,
         silent_mode=False,
     ):
@@ -80,9 +77,6 @@ class DownloadManager:
             action=action,
             format_param=format_param,
             cancel_event=threading.Event(),
-            is_inline=is_inline,
-            inline_query_id=inline_query_id,
-            inline_result_id=inline_result_id,
             reply_to_id=reply_to_id,
             silent_mode=silent_mode,
         )
@@ -160,7 +154,6 @@ class DownloadManager:
                         for task_id, task in self.tasks.items()
                         if task.status == "downloading"
                         and task.progress < 1.0
-                        and not task.is_inline
                         and not task.silent_mode
                     }
 

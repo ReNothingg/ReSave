@@ -37,11 +37,6 @@ class MessageTemplate:
         return caption
     
     @staticmethod
-    def format_inline_caption(title: str, url: str) -> str:
-        safe_title = MessageTemplate._escape_text(title)
-        return f"🎬 <b>{safe_title}</b>\n\n{MessageTemplate._format_original_link(url)}\n\n⚡ @ReSafeBot"
-
-    @staticmethod
     def format_tiktok_photo_caption(url: str, count: int = 1) -> str:
         suffix = f" ({count} шт.)" if count > 1 else ""
         return (
