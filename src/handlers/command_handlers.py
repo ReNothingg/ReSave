@@ -5,6 +5,7 @@ from datetime import datetime
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ..core.user_stats import get_stats_manager
@@ -23,7 +24,8 @@ def register_command_handlers(router: Router):
             logger.warning("Не удалось ответить на команду в чате %s: %s", message.chat.id, exc)
             return None
 
-    async def send_welcome(message: Message):
+    async def send_welcome(message: Message, state: FSMContext):
+        await state.clear()
         welcome_text = ui_manager.format_panel(
             "ReSave",
             [
@@ -41,7 +43,8 @@ def register_command_handlers(router: Router):
         )
         await safe_reply(message, welcome_text)
 
-    async def help_command(message: Message):
+    async def help_command(message: Message, state: FSMContext):
+        await state.clear()
         help_text = ui_manager.format_panel(
             "Как пользоваться ReSave",
             [
@@ -55,13 +58,14 @@ def register_command_handlers(router: Router):
                 "2. Отправьте ссылку.",
                 "3. Бот скачает видео в среднем качестве.",
                 "",
-                "Если ссылка не распознается, пришлите полный URL с https://.",
+                "Если платформа поддерживается, бот попробует обработать ссылку через yt-dlp.",
             ],
             icon="📖",
         )
         await safe_reply(message, help_text)
 
-    async def status_command(message: Message):
+    async def status_command(message: Message, state: FSMContext):
+        await state.clear()
         from .download_handlers import get_download_manager
 
         manager = get_download_manager()
@@ -132,7 +136,8 @@ def register_command_handlers(router: Router):
             reply_markup=keyboard,
         )
 
-    async def cancel_download(message: Message):
+    async def cancel_download(message: Message, state: FSMContext):
+        await state.clear()
         from .download_handlers import get_download_manager
 
         manager = get_download_manager()
@@ -172,7 +177,8 @@ def register_command_handlers(router: Router):
             )
         )
 
-    async def stats_command(message: Message):
+    async def stats_command(message: Message, state: FSMContext):
+        await state.clear()
         stats_manager = get_stats_manager()
         user_stats = stats_manager.get_user_stats(message.chat.id)
 

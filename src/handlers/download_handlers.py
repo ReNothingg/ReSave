@@ -319,8 +319,8 @@ def register_download_handlers(router: Router, sync_bot):
             )
         )
 
-    async def handle_url(message: Message):
-        await process_url_message(message)
+    async def handle_url(message: Message, state: FSMContext):
+        await process_url_message(message, state)
 
     async def handle_download(call: CallbackQuery):
         if not call.data or not call.message:
