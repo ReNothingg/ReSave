@@ -84,6 +84,8 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
             "no_warnings": True,
             "skip_download": True,
             "socket_timeout": 30,
+            "retries": 2,
+            "extractor_retries": 2,
             "cookiefile": config.COOKIES_FILE,
             "nocheckcertificate": True,
         }

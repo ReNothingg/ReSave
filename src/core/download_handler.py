@@ -1,4 +1,5 @@
 import logging
+import multiprocessing
 import os
 import shutil
 
@@ -24,6 +25,47 @@ from .media_assets import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _yt_dlp_download_worker(url: str, ydl_params: dict, result_queue):
+    try:
+        with yt_dlp.YoutubeDL(ydl_params) as ydl:
+            ydl.download([url])
+    except BaseException as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)))
+    else:
+        result_queue.put(("ok", "", ""))
+
+
+def _download_with_timeout(url: str, ydl_params: dict, timeout_seconds: int):
+    child_params = dict(ydl_params)
+    child_params.pop("progress_hooks", None)
+
+    result_queue = multiprocessing.Queue(maxsize=1)
+    process = multiprocessing.Process(
+        target=_yt_dlp_download_worker,
+        args=(url, child_params, result_queue),
+        daemon=True,
+    )
+    process.start()
+    process.join(timeout_seconds)
+
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+        raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
+
+    if not result_queue.empty():
+        status, error_type, message = result_queue.get()
+        if status == "ok":
+            return
+        raise RuntimeError(f"{error_type}: {message}")
+
+    if process.exitcode:
+        raise RuntimeError(f"yt-dlp exited with code {process.exitcode}")
 
 
 def _ffmpeg_location() -> str | None:
@@ -164,6 +206,11 @@ def _download_and_send_video(task, bot, temp_dir):
         "noplaylist": True,
         "merge_output_format": "mp4",
         "http_chunk_size": 10485760,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 3,
+        "file_access_retries": 3,
         "cookiefile": config.COOKIES_FILE,
         "nocheckcertificate": True,
         "http_headers": {
@@ -179,8 +226,7 @@ def _download_and_send_video(task, bot, temp_dir):
     if ffmpeg_location:
         ydl_params["ffmpeg_location"] = ffmpeg_location
 
-    with yt_dlp.YoutubeDL(ydl_params) as ydl:
-        ydl.download([task.url])
+    _download_with_timeout(task.url, ydl_params, config.DOWNLOAD_TIMEOUT_SECONDS)
 
     downloaded_files = find_completed_files(work_dir)
     if not downloaded_files:

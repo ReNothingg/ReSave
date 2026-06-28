@@ -16,6 +16,8 @@ def fetch_video_info(url):
             "extract_flat": False,
             "skip_download": True,
             "socket_timeout": 10,
+            "retries": 2,
+            "extractor_retries": 2,
             "cookiefile": cookie_path,
             "nocheckcertificate": True,
         }
@@ -37,6 +39,8 @@ def check_subtitles_available(url):
             "extract_flat": False,
             "skip_download": True,
             "socket_timeout": 5,
+            "retries": 2,
+            "extractor_retries": 2,
             "cookiefile": cookie_path,
             "nocheckcertificate": True,
         }

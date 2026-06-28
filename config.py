@@ -87,6 +87,7 @@ class Settings:
     admin_ids: tuple[int, ...]
     vip_users: tuple[int, ...]
     log_level: str
+    download_timeout_seconds: int
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -116,6 +117,7 @@ def build_settings() -> Settings:
         admin_ids=_get_id_list("ADMIN_IDS"),
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
+        download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 900, minimum=30),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -161,5 +163,6 @@ STATS_DB_PATH = SETTINGS.stats_db_path
 ADMIN_IDS = SETTINGS.admin_ids
 VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
+DOWNLOAD_TIMEOUT_SECONDS = SETTINGS.download_timeout_seconds
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items
