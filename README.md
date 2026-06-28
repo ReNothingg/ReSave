@@ -156,9 +156,9 @@ bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh
 bash -c 'export BOT_API_BIN=$HOME/telegram-bot-api/bin/telegram-bot-api && bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh'
 ```
 
-Скрипт поднимает Bot API на `127.0.0.1:8081`, поэтому он доступен только боту
-внутри этого же Service-процесса. Это безопаснее, чем открывать порт сервиса
-наружу.
+Скрипт поднимает Bot API на `127.0.0.1:8081`, поэтому он доступен только боту внутри этого же Service-процесса. Это безопаснее, чем открывать порт сервиса наружу.
+
+В этом режиме скрипт включает `BOT_API_USE_LOCAL_FILE_PATHS=true`: бот передает локальному `telegram-bot-api` путь к готовому файлу вместо повторной загрузки этого файла multipart-запросом. Не включайте этот флаг для Docker-запуска, если контейнер `telegram-bot-api` не видит директорию `temp_downloads` по тому же пути, что и пайтон-процесс.
 
 ### Cookies для `yt-dlp` (опционально)
 

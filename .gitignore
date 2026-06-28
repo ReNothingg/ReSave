@@ -24,3 +24,5 @@ database.db
 user_stats.json
 
 test_config.py
+
+tests/

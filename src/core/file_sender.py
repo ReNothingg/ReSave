@@ -12,6 +12,14 @@ from .download_support import record_download_success
 logger = logging.getLogger(__name__)
 
 
+def _is_empty_bot_api_response_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return (
+        type(exc).__name__ == "ClientDecodeError"
+        and "failed to decode object" in error_text
+    )
+
+
 def send_file_with_retry(task, file_path, title, bot):
     from ..utils.error_handler import get_error_handler
     from ..utils.retry_manager import (
@@ -28,8 +36,31 @@ def send_file_with_retry(task, file_path, title, bot):
     original_title = task.info.get("title") or task.info.get("id") or title or "video"
     file_size_bytes = os.path.getsize(file_path)
     file_size_mb = file_size_bytes / (1024 * 1024)
+    force_document = False
+
+    def send_as_document(caption):
+        visible_file_name = (
+            f"{sanitize_filename(original_title) or 'video'}"
+            f"{file_extension or '.mp4'}"
+        )
+        logger.debug(
+            "Sending file as document: task_id=%s size=%.1fMB path=%s",
+            task.task_id,
+            file_size_mb,
+            file_path,
+        )
+        bot.send_document(
+            task.chat_id,
+            file_path,
+            caption=caption,
+            parse_mode="HTML",
+            timeout=600,
+            reply_to_message_id=task.reply_to_id,
+            visible_file_name=visible_file_name,
+        )
 
     def send_operation():
+        nonlocal force_document
         duration = task.info.get("duration")
         safe_duration = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
 
@@ -55,26 +86,8 @@ def send_file_with_retry(task, file_path, title, bot):
             action="video",
             file_size=file_size_mb,
         )
-        if file_size_bytes > config.SEND_AS_DOC_LIMIT:
-            visible_file_name = (
-                f"{sanitize_filename(original_title) or 'video'}"
-                f"{file_extension or '.mp4'}"
-            )
-            logger.debug(
-                "Sending file as document: task_id=%s size=%.1fMB path=%s",
-                task.task_id,
-                file_size_mb,
-                file_path,
-            )
-            bot.send_document(
-                task.chat_id,
-                file_path,
-                caption=caption,
-                parse_mode="HTML",
-                timeout=600,
-                reply_to_message_id=task.reply_to_id,
-                visible_file_name=visible_file_name,
-            )
+        if force_document or file_size_bytes > config.SEND_AS_DOC_LIMIT:
+            send_as_document(caption)
             return
 
         logger.debug(
@@ -83,15 +96,28 @@ def send_file_with_retry(task, file_path, title, bot):
             file_size_mb,
             file_path,
         )
-        bot.send_video(
-            task.chat_id,
-            file_path,
-            caption=caption,
-            parse_mode="HTML",
-            supports_streaming=True,
-            timeout=600,
-            reply_to_message_id=task.reply_to_id,
-        )
+        try:
+            bot.send_video(
+                task.chat_id,
+                file_path,
+                caption=caption,
+                parse_mode="HTML",
+                supports_streaming=True,
+                timeout=600,
+                reply_to_message_id=task.reply_to_id,
+            )
+        except Exception as exc:
+            if not _is_empty_bot_api_response_error(exc):
+                raise
+
+            force_document = True
+            logger.warning(
+                "Telegram Bot API returned an empty non-JSON response while sending "
+                "video; falling back to document: task_id=%s size=%.1fMB",
+                task.task_id,
+                file_size_mb,
+            )
+            send_as_document(caption)
 
     def on_retry(attempt, delay):
         if not task.silent_mode:
