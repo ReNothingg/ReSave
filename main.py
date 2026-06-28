@@ -153,6 +153,11 @@ async def run():
         )
 
     bot = Bot(token=settings.bot_token, session=session)
+    cloud_upload_bot = (
+        Bot(token=settings.bot_token)
+        if settings.bot_api_base_url and settings.bot_api_is_local
+        else None
+    )
     dispatcher = Dispatcher(storage=MemoryStorage())
     router = Router()
 
@@ -160,7 +165,11 @@ async def run():
         await ensure_bot_api_available(bot, settings)
 
         sync_bot = TelegramBotWrapper(
-            AiogramSyncBotAdapter(bot=bot, loop=asyncio.get_running_loop())
+            AiogramSyncBotAdapter(
+                bot=bot,
+                loop=asyncio.get_running_loop(),
+                cloud_upload_bot=cloud_upload_bot,
+            )
         )
 
         logger.info("Проверка FFmpeg...")
@@ -193,6 +202,8 @@ async def run():
             allowed_updates=dispatcher.resolve_used_update_types(),
         )
     finally:
+        if cloud_upload_bot:
+            await cloud_upload_bot.session.close()
         await bot.session.close()
 
 

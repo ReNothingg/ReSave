@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+import config
 from aiogram import Bot
 from aiogram.types import (
     BufferedInputFile,
@@ -13,10 +15,19 @@ from aiogram.types import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class AiogramSyncBotAdapter:
-    def __init__(self, bot: Bot, loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self,
+        bot: Bot,
+        loop: asyncio.AbstractEventLoop,
+        cloud_upload_bot: Bot | None = None,
+    ):
         self.bot = bot
         self.loop = loop
+        self.cloud_upload_bot = cloud_upload_bot
 
     def _call(self, coro):
         try:
@@ -32,6 +43,34 @@ class AiogramSyncBotAdapter:
 
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         return future.result()
+
+    def _is_local_api(self) -> bool:
+        api = getattr(getattr(self.bot, "session", None), "api", None)
+        return bool(getattr(api, "is_local", False))
+
+    def _can_fallback_to_cloud(self, file_obj: Any) -> bool:
+        if not self.cloud_upload_bot or not self._is_local_api():
+            return False
+
+        if isinstance(file_obj, (str, os.PathLike)) and os.path.exists(file_obj):
+            return os.path.getsize(file_obj) <= config.CLOUD_BOT_API_UPLOAD_LIMIT
+
+        return isinstance(file_obj, bytes) and len(file_obj) <= config.CLOUD_BOT_API_UPLOAD_LIMIT
+
+    @staticmethod
+    def _is_local_upload_transport_error(exc: Exception) -> bool:
+        error_text = str(exc).lower()
+        transport_markers = (
+            "clientdecodeerror",
+            "failed to decode object",
+            "connection reset",
+            "server disconnected",
+            "clientoserror",
+            "request timeout",
+            "timeout error",
+            "invalid file http url specified: url host is empty",
+        )
+        return any(marker in error_text for marker in transport_markers)
 
     def _prepare_file(self, file_obj: Any, *, filename: str | None = None):
         if isinstance(file_obj, (FSInputFile, BufferedInputFile)):
@@ -100,7 +139,27 @@ class AiogramSyncBotAdapter:
     def send_video(self, chat_id, video, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         video_input = self._prepare_file(video)
-        return self._call(self.bot.send_video(chat_id=chat_id, video=video_input, **payload))
+        try:
+            return self._call(self.bot.send_video(chat_id=chat_id, video=video_input, **payload))
+        except Exception as exc:
+            if not (
+                self._can_fallback_to_cloud(video)
+                and self._is_local_upload_transport_error(exc)
+            ):
+                raise
+
+            logger.warning(
+                "Local Bot API sendVideo failed; retrying through cloud Bot API: %s",
+                exc,
+            )
+            cloud_video_input = self._prepare_file(video)
+            return self._call(
+                self.cloud_upload_bot.send_video(
+                    chat_id=chat_id,
+                    video=cloud_video_input,
+                    **payload,
+                )
+            )
 
     def send_document(self, chat_id, document, **kwargs):
         payload = self._normalize_kwargs(kwargs)
