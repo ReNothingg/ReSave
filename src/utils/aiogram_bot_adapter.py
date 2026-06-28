@@ -33,14 +33,6 @@ class AiogramSyncBotAdapter:
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         return future.result()
 
-    def _should_use_local_file_paths(self) -> bool:
-        api = getattr(getattr(self.bot, "session", None), "api", None)
-        if not getattr(api, "is_local", False):
-            return False
-
-        enabled = os.getenv("BOT_API_USE_LOCAL_FILE_PATHS", "").strip().lower()
-        return enabled in {"1", "true", "yes", "on"}
-
     def _prepare_file(self, file_obj: Any, *, filename: str | None = None):
         if isinstance(file_obj, (FSInputFile, BufferedInputFile)):
             return file_obj
@@ -48,9 +40,6 @@ class AiogramSyncBotAdapter:
         if isinstance(file_obj, (str, os.PathLike)):
             path = str(file_obj)
             if os.path.exists(path):
-                if self._should_use_local_file_paths():
-                    api = self.bot.session.api
-                    return str(api.wrap_local_file.to_server(Path(path).resolve()))
                 return FSInputFile(path, filename=filename or Path(path).name)
             return path
 
