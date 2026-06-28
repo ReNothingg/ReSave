@@ -30,6 +30,8 @@ class BroadcastPayload:
     text: str | None = None
     caption: str | None = None
     file_id: str | None = None
+    entities: list | None = None
+    caption_entities: list | None = None
 
 
 def _build_admin_keyboard() -> InlineKeyboardMarkup:
@@ -63,6 +65,14 @@ def _build_back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+        ]
+    )
+
+
+def _build_broadcast_waiting_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="broadcast_cancel")]
         ]
     )
 
@@ -183,13 +193,18 @@ def _build_user_list_text():
 
 def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
     if message.text:
-        return BroadcastPayload(kind="text", text=message.text)
+        return BroadcastPayload(
+            kind="text",
+            text=message.text,
+            entities=list(message.entities or []),
+        )
 
     if message.photo:
         return BroadcastPayload(
             kind="photo",
             file_id=message.photo[-1].file_id,
             caption=message.caption,
+            caption_entities=list(message.caption_entities or []),
         )
 
     if message.video:
@@ -197,6 +212,7 @@ def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
             kind="video",
             file_id=message.video.file_id,
             caption=message.caption,
+            caption_entities=list(message.caption_entities or []),
         )
 
     if message.document:
@@ -204,6 +220,7 @@ def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
             kind="document",
             file_id=message.document.file_id,
             caption=message.caption,
+            caption_entities=list(message.caption_entities or []),
         )
 
     if message.audio:
@@ -211,6 +228,7 @@ def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
             kind="audio",
             file_id=message.audio.file_id,
             caption=message.caption,
+            caption_entities=list(message.caption_entities or []),
         )
 
     return None
@@ -218,23 +236,43 @@ def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
 
 async def _send_broadcast_payload(bot: Bot, user_id: int, payload: BroadcastPayload):
     if payload.kind == "text":
-        await bot.send_message(user_id, payload.text or "")
+        await bot.send_message(user_id, payload.text or "", entities=payload.entities)
         return
 
     if payload.kind == "photo":
-        await bot.send_photo(user_id, payload.file_id, caption=payload.caption)
+        await bot.send_photo(
+            user_id,
+            payload.file_id,
+            caption=payload.caption,
+            caption_entities=payload.caption_entities,
+        )
         return
 
     if payload.kind == "video":
-        await bot.send_video(user_id, payload.file_id, caption=payload.caption)
+        await bot.send_video(
+            user_id,
+            payload.file_id,
+            caption=payload.caption,
+            caption_entities=payload.caption_entities,
+        )
         return
 
     if payload.kind == "document":
-        await bot.send_document(user_id, payload.file_id, caption=payload.caption)
+        await bot.send_document(
+            user_id,
+            payload.file_id,
+            caption=payload.caption,
+            caption_entities=payload.caption_entities,
+        )
         return
 
     if payload.kind == "audio":
-        await bot.send_audio(user_id, payload.file_id, caption=payload.caption)
+        await bot.send_audio(
+            user_id,
+            payload.file_id,
+            caption=payload.caption,
+            caption_entities=payload.caption_entities,
+        )
         return
 
     raise ValueError(f"Unsupported broadcast payload kind: {payload.kind}")
@@ -261,7 +299,8 @@ def register_admin_handlers(router: Router):
                 "Рассылка",
                 ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
                 icon="📣",
-            )
+            ),
+            reply_markup=_build_broadcast_waiting_keyboard(),
         )
 
     async def process_broadcast_message(message: Message, state: FSMContext):
@@ -357,7 +396,7 @@ def register_admin_handlers(router: Router):
                 ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
                 icon="📣",
             ),
-            reply_markup=_build_back_keyboard(),
+            reply_markup=_build_broadcast_waiting_keyboard(),
         )
 
     async def callback_admin_user_list(call: CallbackQuery):

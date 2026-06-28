@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import config
 from aiogram import Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -244,8 +245,11 @@ def register_download_handlers(router: Router, sync_bot):
     ui_manager = get_ui_manager()
     video_info_cache: dict[int, dict] = {}
 
-    async def process_url_message(message: Message):
+    async def process_url_message(message: Message, state: FSMContext):
         if message.from_user and message.from_user.is_bot:
+            return
+
+        if await state.get_state():
             return
 
         text = (message.text or message.caption or "").strip()
