@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+from urllib.parse import urlsplit, urlunsplit
 
 import config
 from aiogram import Router
@@ -18,6 +20,9 @@ from ..utils.message_templates import ErrorMessages
 from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
+
+HTTP_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+BARE_URL_RE = re.compile(r"[^\s<>\"'`]+\.[^\s<>\"'`]+", re.IGNORECASE)
 
 
 _download_manager = None
@@ -159,13 +164,87 @@ def _youtube_resolution_buttons(
     return rows
 
 
+def _extract_url_from_entities(text: str, entities) -> str | None:
+    for entity in entities or []:
+        entity_url = getattr(entity, "url", None)
+        if entity_url:
+            return entity_url
+
+        if getattr(entity, "type", None) != "url":
+            continue
+
+        extract_from = getattr(entity, "extract_from", None)
+        if callable(extract_from):
+            return extract_from(text)
+
+    return None
+
+
+def _clean_download_target(value: str) -> str:
+    target = value.strip().rstrip(".,;:!?)»”’]")
+
+    if "://" not in target and "." in target.split("/", 1)[0]:
+        target = f"https://{target}"
+
+    try:
+        parsed = urlsplit(target)
+    except ValueError:
+        return target
+
+    host = (parsed.hostname or "").lower()
+    twitter_hosts = {
+        "x.com",
+        "www.x.com",
+        "mobile.x.com",
+        "m.x.com",
+        "twitter.com",
+        "www.twitter.com",
+        "mobile.twitter.com",
+        "m.twitter.com",
+    }
+    if host in twitter_hosts:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            len(path_parts) >= 3
+            and path_parts[1] in {"status", "statuses"}
+            and path_parts[2].isdigit()
+        ):
+            return urlunsplit(
+                (
+                    parsed.scheme,
+                    "twitter.com",
+                    f"/{path_parts[0]}/status/{path_parts[2]}",
+                    "",
+                    "",
+                )
+            )
+
+    return target
+
+
+def _extract_download_target(text: str, entities, caption_entities) -> str | None:
+    entity_url = (
+        _extract_url_from_entities(text, entities)
+        or _extract_url_from_entities(text, caption_entities)
+    )
+    if entity_url:
+        return _clean_download_target(entity_url)
+
+    match = HTTP_URL_RE.search(text) or BARE_URL_RE.search(text)
+    if match:
+        return _clean_download_target(match.group(0))
+
+    if not any(char.isspace() for char in text):
+        return _clean_download_target(text)
+
+    return None
+
+
 def register_download_handlers(router: Router, sync_bot):
     ui_manager = get_ui_manager()
     video_info_cache: dict[int, dict] = {}
 
     async def process_url_message(message: Message):
-        from ..utils.url_validator import get_url_validator
-
         if message.from_user and message.from_user.is_bot:
             return
 
@@ -176,31 +255,10 @@ def register_download_handlers(router: Router, sync_bot):
         if text.startswith("/"):
             return
 
-        url_validator = get_url_validator()
-        extracted_url = None
-        for entity in [*(message.entities or []), *(message.caption_entities or [])]:
-            entity_url = getattr(entity, "url", None)
-            if entity_url:
-                extracted_url = entity_url
-                break
-
-        extracted_url = extracted_url or url_validator.extract_url(text)
-        is_valid, corrected_url, metadata = url_validator.validate(extracted_url or "")
-        if not is_valid:
-            if message.chat.type == "private":
-                await message.reply(
-                    ui_manager.format_panel(
-                        "Ссылка не распознана",
-                        [
-                            "Пришлите обычный URL с http:// или https://.",
-                            "Если источник поддерживается yt-dlp, я попробую скачать видео.",
-                        ],
-                        icon="🔗",
-                    )
-                )
+        url = _extract_download_target(text, message.entities, message.caption_entities)
+        if not url:
             return
 
-        url = corrected_url or extracted_url
         from ..core.tiktok_photo_handler import is_tiktok_photo_url
 
         if message.chat.type in {"group", "supergroup"}:
@@ -236,23 +294,13 @@ def register_download_handlers(router: Router, sync_bot):
                 await status_message.edit_text(_build_download_limit_text(message.chat.id))
             return
 
-        if metadata.get("fixed"):
-            logger.info("Ссылка исправлена: %s", metadata.get("fix_type"))
-            status_message = await message.reply(
-                ui_manager.format_panel(
-                    "Ссылка исправлена",
-                    ["Ищу информацию о видео. Обычно это занимает несколько секунд."],
-                    icon="✅",
-                )
+        status_message = await message.reply(
+            ui_manager.format_panel(
+                "Ищу видео",
+                ["Проверяю ссылку и доступные форматы."],
+                icon="🔍",
             )
-        else:
-            status_message = await message.reply(
-                ui_manager.format_panel(
-                    "Ищу видео",
-                    ["Проверяю ссылку и доступные форматы."],
-                    icon="🔍",
-                )
-            )
+        )
 
         asyncio.create_task(
             asyncio.to_thread(

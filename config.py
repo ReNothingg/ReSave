@@ -107,7 +107,7 @@ def build_settings() -> Settings:
         max_concurrent_downloads=_get_int("MAX_CONCURRENT_DOWNLOADS", 1, minimum=1),
         max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 1, minimum=0),
         max_file_size=_get_int("MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024, minimum=1),
-        send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", 20 * 1024 * 1024, minimum=1),
+        send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", bot_api_upload_limit, minimum=1),
         bot_api_base_url=bot_api_base_url,
         bot_api_is_local=bot_api_is_local,
         bot_api_upload_limit=bot_api_upload_limit,

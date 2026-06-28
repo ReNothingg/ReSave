@@ -119,7 +119,7 @@ class ErrorMessages:
     GIF_FFMPEG_MISSING = "✨ FFmpeg не установлен. GIF недоступен."
     
     # Ошибки с URL/ссылкой
-    INVALID_URL = "🔗 Это не похоже на корректную ссылку на видео."
+    INVALID_URL = "🔗 Загрузчик не смог обработать эту ссылку."
     MALFORMED_URL = "🔗 Ссылка повреждена или неправильного формата."
     UNSUPPORTED_PLATFORM = "🌐 Эта платформа не поддерживается. Попробуйте другой сервис."
     
@@ -189,7 +189,7 @@ class ErrorMessages:
             elif "too many requests" in error_str.lower():
                 message += "\n\n💡 Подождите 1-2 минуты и повторите попытку."
             elif "invalid" in error_str.lower():
-                message += "\n\n💡 Убедитесь, что ссылка полная (начинается с https://)."
+                message += "\n\n💡 Если это видео, попробуйте открыть его в браузере и отправить ссылку из адресной строки."
             elif "requested format is not available" in error_str.lower():
                 message += "\n\n💡 Откройте кнопки качества и выберите другой вариант."
             elif "entity too large" in error_str.lower() or "file is too big" in error_str.lower():
