@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import config
 from aiogram import Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
@@ -408,6 +409,7 @@ def register_download_handlers(router: Router, sync_bot):
 
     router.message.register(
         handle_url,
+        StateFilter(None),
         lambda message: bool(
             (message.text or message.caption)
             and not (message.text or message.caption or "").strip().startswith("/")
