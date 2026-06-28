@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import config
@@ -10,6 +13,115 @@ from ..utils.message_templates import MessageTemplate
 from .download_support import record_download_success
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_ratio(value: str | None) -> float | None:
+    if not value or value in {"0:1", "1:0", "0:0"}:
+        return None
+
+    try:
+        numerator, denominator = value.split(":", 1)
+        numerator_int = int(numerator)
+        denominator_int = int(denominator)
+    except (TypeError, ValueError):
+        return None
+
+    if numerator_int <= 0 or denominator_int <= 0:
+        return None
+
+    return numerator_int / denominator_int
+
+
+def _probe_video_metadata(file_path: str) -> dict:
+    ffprobe_path = shutil.which("ffprobe")
+    if not ffprobe_path:
+        return {}
+
+    command = [
+        ffprobe_path,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,duration,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation:format=duration",
+        "-of",
+        "json",
+        file_path,
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        payload = json.loads(completed.stdout or "{}")
+    except Exception as exc:
+        logger.debug("Не удалось получить metadata видео через ffprobe: %s", exc)
+        return {}
+
+    streams = payload.get("streams") or []
+    stream = streams[0] if streams else {}
+    metadata: dict[str, int] = {}
+
+    width = stream.get("width")
+    height = stream.get("height")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        sar = _parse_ratio(stream.get("sample_aspect_ratio"))
+        if sar and sar != 1:
+            width = max(1, round(width * sar))
+
+        rotation = 0
+        try:
+            rotation = int((stream.get("tags") or {}).get("rotate") or 0)
+        except (TypeError, ValueError):
+            rotation = 0
+
+        for side_data in stream.get("side_data_list") or []:
+            try:
+                rotation = int(side_data.get("rotation"))
+                break
+            except (TypeError, ValueError):
+                continue
+
+        if abs(rotation) % 180 == 90:
+            width, height = height, width
+
+        metadata["width"] = width
+        metadata["height"] = height
+
+    duration = stream.get("duration") or (payload.get("format") or {}).get("duration")
+    try:
+        duration_int = round(float(duration))
+    except (TypeError, ValueError):
+        duration_int = 0
+    if duration_int > 0:
+        metadata["duration"] = duration_int
+
+    return metadata
+
+
+def _video_metadata_from_info(info: dict) -> dict:
+    metadata: dict[str, int] = {}
+
+    width = info.get("width")
+    height = info.get("height")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        metadata["width"] = width
+        metadata["height"] = height
+
+    duration = info.get("duration")
+    try:
+        duration_int = round(float(duration))
+    except (TypeError, ValueError):
+        duration_int = 0
+    if duration_int > 0:
+        metadata["duration"] = duration_int
+
+    return metadata
 
 
 def send_file_with_retry(task, file_path, title, bot):
@@ -28,6 +140,7 @@ def send_file_with_retry(task, file_path, title, bot):
     original_title = task.info.get("title") or task.info.get("id") or title or "video"
     file_size_bytes = os.path.getsize(file_path)
     file_size_mb = file_size_bytes / (1024 * 1024)
+    video_metadata = _probe_video_metadata(file_path) or _video_metadata_from_info(task.info)
 
     def send_as_document(caption):
         visible_file_name = (
@@ -51,7 +164,7 @@ def send_file_with_retry(task, file_path, title, bot):
         )
 
     def send_operation():
-        duration = task.info.get("duration")
+        duration = video_metadata.get("duration") or task.info.get("duration")
         safe_duration = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
 
         if task.action == "audio" and file_extension in audio_extensions:
@@ -81,11 +194,19 @@ def send_file_with_retry(task, file_path, title, bot):
             return
 
         logger.debug(
-            "Sending file as video: task_id=%s size=%.1fMB path=%s",
+            "Sending file as video: task_id=%s size=%.1fMB path=%s metadata=%s",
             task.task_id,
             file_size_mb,
             file_path,
+            video_metadata,
         )
+        video_kwargs = {}
+        if safe_duration is not None:
+            video_kwargs["duration"] = safe_duration
+        if video_metadata.get("width") and video_metadata.get("height"):
+            video_kwargs["width"] = video_metadata["width"]
+            video_kwargs["height"] = video_metadata["height"]
+
         bot.send_video(
             task.chat_id,
             file_path,
@@ -94,6 +215,7 @@ def send_file_with_retry(task, file_path, title, bot):
             supports_streaming=True,
             timeout=600,
             reply_to_message_id=task.reply_to_id,
+            **video_kwargs,
         )
 
     def on_retry(attempt, delay):
