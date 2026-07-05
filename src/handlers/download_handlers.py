@@ -24,7 +24,12 @@ from ..utils.ui_manager import get_ui_manager
 logger = logging.getLogger(__name__)
 
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
-BARE_URL_RE = re.compile(r"[^\s<>\"'`]+\.[^\s<>\"'`]+", re.IGNORECASE)
+BARE_URL_RE = re.compile(
+    r"(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}"
+    r"(?:/[^\s<>\"'`]*)?",
+    re.IGNORECASE,
+)
+SUPPORTED_SCHEMES = {"http", "https"}
 
 
 _download_manager = None
@@ -224,22 +229,84 @@ def _clean_download_target(value: str) -> str:
     return target
 
 
+def _is_probably_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+
+    if parsed.scheme and parsed.scheme.lower() not in SUPPORTED_SCHEMES:
+        return False
+
+    host = parsed.hostname or ""
+    if not parsed.scheme and not host:
+        return False
+
+    if host == "localhost":
+        return True
+
+    if "." not in host:
+        return False
+
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if ascii_host != host.lower():
+        return False
+
+    labels = ascii_host.split(".")
+    tld = labels[-1]
+    if len(tld) < 2 or len(tld) > 24:
+        return False
+
+    return all(
+        label
+        and len(label) <= 63
+        and re.fullmatch(r"[a-z0-9-]+", label, re.IGNORECASE)
+        and not label.startswith("-")
+        and not label.endswith("-")
+        for label in labels
+    )
+
+
 def _extract_download_target(text: str, entities, caption_entities) -> str | None:
     entity_url = (
         _extract_url_from_entities(text, entities)
         or _extract_url_from_entities(text, caption_entities)
     )
     if entity_url:
-        return _clean_download_target(entity_url)
+        target = _clean_download_target(entity_url)
+        return target if _is_probably_url(target) else None
 
     match = HTTP_URL_RE.search(text) or BARE_URL_RE.search(text)
     if match:
-        return _clean_download_target(match.group(0))
+        target = _clean_download_target(match.group(0))
+        return target if _is_probably_url(target) else None
 
-    if not any(char.isspace() for char in text):
-        return _clean_download_target(text)
+    if (
+        not any(char.isspace() for char in text)
+        and ("://" in text or text.lower().startswith("www."))
+    ):
+        target = _clean_download_target(text)
+        return target if _is_probably_url(target) else None
 
     return None
+
+
+def _run_background_thread(func, *args, label: str):
+    task = asyncio.create_task(asyncio.to_thread(func, *args))
+
+    def _consume_result(done_task: asyncio.Task):
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            logger.debug("Фоновая задача отменена: %s", label)
+        except Exception:
+            logger.exception("Ошибка в фоновой задаче: %s", label)
+
+    task.add_done_callback(_consume_result)
+    return task
 
 
 def register_download_handlers(router: Router, sync_bot):
@@ -268,13 +335,12 @@ def register_download_handlers(router: Router, sync_bot):
 
         if message.chat.type in {"group", "supergroup"}:
             logger.info("Получена ссылка в группе %s: %s", message.chat.id, url)
-            asyncio.create_task(
-                asyncio.to_thread(
-                    handle_group_download,
-                    url,
-                    message.chat.id,
-                    message.message_id,
-                )
+            _run_background_thread(
+                handle_group_download,
+                url,
+                message.chat.id,
+                message.message_id,
+                label=f"group_download_info:{message.chat.id}:{message.message_id}",
             )
             return
 
@@ -307,16 +373,15 @@ def register_download_handlers(router: Router, sync_bot):
             )
         )
 
-        asyncio.create_task(
-            asyncio.to_thread(
-                extract_video_info,
-                sync_bot,
-                message.chat.id,
-                message.message_id,
-                url,
-                status_message.message_id,
-                video_info_cache,
-            )
+        _run_background_thread(
+            extract_video_info,
+            sync_bot,
+            message.chat.id,
+            message.message_id,
+            url,
+            status_message.message_id,
+            video_info_cache,
+            label=f"video_info:{message.chat.id}:{message.message_id}",
         )
 
     async def handle_url(message: Message, state: FSMContext):

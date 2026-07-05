@@ -92,6 +92,30 @@ class AiogramSyncBotAdapter:
 
         return file_obj
 
+    def _call_with_cloud_fallback(
+        self,
+        *,
+        local_coro_factory,
+        cloud_coro_factory,
+        file_obj: Any,
+        method_name: str,
+    ):
+        try:
+            return self._call(local_coro_factory())
+        except Exception as exc:
+            if not (
+                self._can_fallback_to_cloud(file_obj)
+                and self._is_local_upload_transport_error(exc)
+            ):
+                raise
+
+            logger.warning(
+                "Local Bot API %s failed; retrying through cloud Bot API: %s",
+                method_name,
+                exc,
+            )
+            return self._call(cloud_coro_factory())
+
     @staticmethod
     def _normalize_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(kwargs)
@@ -139,46 +163,74 @@ class AiogramSyncBotAdapter:
     def send_video(self, chat_id, video, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         video_input = self._prepare_file(video)
-        try:
-            return self._call(self.bot.send_video(chat_id=chat_id, video=video_input, **payload))
-        except Exception as exc:
-            if not (
-                self._can_fallback_to_cloud(video)
-                and self._is_local_upload_transport_error(exc)
-            ):
-                raise
-
-            logger.warning(
-                "Local Bot API sendVideo failed; retrying through cloud Bot API: %s",
-                exc,
-            )
-            cloud_video_input = self._prepare_file(video)
-            return self._call(
-                self.cloud_upload_bot.send_video(
-                    chat_id=chat_id,
-                    video=cloud_video_input,
-                    **payload,
-                )
-            )
+        return self._call_with_cloud_fallback(
+            local_coro_factory=lambda: self.bot.send_video(
+                chat_id=chat_id,
+                video=video_input,
+                **payload,
+            ),
+            cloud_coro_factory=lambda: self.cloud_upload_bot.send_video(
+                chat_id=chat_id,
+                video=self._prepare_file(video),
+                **payload,
+            ),
+            file_obj=video,
+            method_name="sendVideo",
+        )
 
     def send_document(self, chat_id, document, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         visible_file_name = payload.pop("_visible_file_name", None)
         document_input = self._prepare_file(document, filename=visible_file_name)
-        return self._call(
-            self.bot.send_document(chat_id=chat_id, document=document_input, **payload)
+        return self._call_with_cloud_fallback(
+            local_coro_factory=lambda: self.bot.send_document(
+                chat_id=chat_id,
+                document=document_input,
+                **payload,
+            ),
+            cloud_coro_factory=lambda: self.cloud_upload_bot.send_document(
+                chat_id=chat_id,
+                document=self._prepare_file(document, filename=visible_file_name),
+                **payload,
+            ),
+            file_obj=document,
+            method_name="sendDocument",
         )
 
     def send_audio(self, chat_id, audio, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         audio_input = self._prepare_file(audio)
-        return self._call(self.bot.send_audio(chat_id=chat_id, audio=audio_input, **payload))
+        return self._call_with_cloud_fallback(
+            local_coro_factory=lambda: self.bot.send_audio(
+                chat_id=chat_id,
+                audio=audio_input,
+                **payload,
+            ),
+            cloud_coro_factory=lambda: self.cloud_upload_bot.send_audio(
+                chat_id=chat_id,
+                audio=self._prepare_file(audio),
+                **payload,
+            ),
+            file_obj=audio,
+            method_name="sendAudio",
+        )
 
     def send_animation(self, chat_id, animation, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         animation_input = self._prepare_file(animation)
-        return self._call(
-            self.bot.send_animation(chat_id=chat_id, animation=animation_input, **payload)
+        return self._call_with_cloud_fallback(
+            local_coro_factory=lambda: self.bot.send_animation(
+                chat_id=chat_id,
+                animation=animation_input,
+                **payload,
+            ),
+            cloud_coro_factory=lambda: self.cloud_upload_bot.send_animation(
+                chat_id=chat_id,
+                animation=self._prepare_file(animation),
+                **payload,
+            ),
+            file_obj=animation,
+            method_name="sendAnimation",
         )
 
     def send_media_group(self, chat_id, media, **kwargs):

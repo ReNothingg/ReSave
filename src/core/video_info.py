@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 cookie_path = config.COOKIES_FILE
 
 
-def fetch_video_info(url):
+def fetch_video_info_result(url):
     try:
         ydl_opts = {
             "quiet": True,
@@ -24,11 +24,16 @@ def fetch_video_info(url):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return info
+            return info, None
 
     except Exception as e:
         logger.info("Ссылка не поддерживается или недоступна: %s", e)
-        return None
+        return None, str(e)
+
+
+def fetch_video_info(url):
+    info, _error = fetch_video_info_result(url)
+    return info
 
 
 def check_subtitles_available(url):

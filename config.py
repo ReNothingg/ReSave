@@ -117,7 +117,7 @@ def build_settings() -> Settings:
         admin_ids=_get_id_list("ADMIN_IDS"),
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
-        download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 900, minimum=30),
+        download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 420, minimum=30),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),

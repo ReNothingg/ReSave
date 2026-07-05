@@ -13,6 +13,60 @@ from ..utils.ui_manager import get_ui_manager
 logger = logging.getLogger(__name__)
 
 
+def _safe_edit_message_text(bot, text: str, chat_id: int, message_id: int, **kwargs) -> bool:
+    try:
+        bot.edit_message_text(text, chat_id, message_id, **kwargs)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Не удалось обновить сообщение статуса chat_id=%s message_id=%s: %s",
+            chat_id,
+            message_id,
+            exc,
+        )
+        return False
+
+
+def _build_info_error_text(error: str | None) -> str:
+    ui_manager = get_ui_manager()
+    error_text = (error or "").lower()
+
+    if "instagram" in error_text and (
+        "empty media response" in error_text
+        or "login" in error_text
+        or "cookies" in error_text
+        or "not accessible" in error_text
+    ):
+        return ui_manager.format_panel(
+            "Instagram ограничил доступ",
+            [
+                "Не удалось получить медиа без актуальных cookies.",
+                "Обновите cookies.txt на сервере или проверьте, что пост открыт без входа в браузере.",
+            ],
+            icon="❌",
+        )
+
+    if "private" in error_text:
+        return ui_manager.format_panel(
+            "Приватное видео",
+            ["У бота нет доступа к этому видео."],
+            icon="❌",
+        )
+
+    if "unsupported url" in error_text or "not a valid url" in error_text:
+        return ui_manager.format_panel(
+            "Ссылка не поддерживается",
+            ["Отправьте прямую ссылку на видео с поддерживаемой платформы."],
+            icon="❌",
+        )
+
+    return ui_manager.format_panel(
+        "Не удалось прочитать ссылку",
+        ["Проверьте доступность видео и отправьте ссылку еще раз."],
+        icon="❌",
+    )
+
+
 def queue_playlist_downloads(
     *,
     download_manager,
@@ -147,16 +201,13 @@ def extract_video_info(
 ):
     ui_manager = get_ui_manager()
     try:
-        from ..core.video_info import fetch_video_info
+        from ..core.video_info import fetch_video_info_result
 
-        info = fetch_video_info(url)
+        info, info_error = fetch_video_info_result(url)
         if not info:
-            bot.edit_message_text(
-                ui_manager.format_panel(
-                    "Не удалось прочитать ссылку",
-                    ["Проверьте доступность видео и отправьте ссылку еще раз."],
-                    icon="❌",
-                ),
+            _safe_edit_message_text(
+                bot,
+                _build_info_error_text(info_error),
                 chat_id,
                 status_message_id,
             )
@@ -166,7 +217,8 @@ def extract_video_info(
             playlist_entries = collect_playlist_entries(info)
             playlist_error = build_playlist_limit_error(chat_id, len(playlist_entries))
             if playlist_error:
-                bot.edit_message_text(
+                _safe_edit_message_text(
+                    bot,
                     playlist_error,
                     chat_id,
                     status_message_id,
@@ -183,7 +235,8 @@ def extract_video_info(
                     silent_mode=True,
                 )
             except ValueError:
-                bot.edit_message_text(
+                _safe_edit_message_text(
+                    bot,
                     build_download_limit_text(chat_id),
                     chat_id,
                     status_message_id,
@@ -191,14 +244,16 @@ def extract_video_info(
                 return
 
             if queued_count == 0:
-                bot.edit_message_text(
+                _safe_edit_message_text(
+                    bot,
                     "🎶 Не удалось извлечь элементы плейлиста.",
                     chat_id,
                     status_message_id,
                 )
                 return
 
-            bot.edit_message_text(
+            _safe_edit_message_text(
+                bot,
                 build_playlist_queued_text(info, queued_count),
                 chat_id,
                 status_message_id,
@@ -207,7 +262,8 @@ def extract_video_info(
 
         duration_error = build_duration_limit_error(chat_id, info.get("duration"))
         if duration_error:
-            bot.edit_message_text(
+            _safe_edit_message_text(
+                bot,
                 duration_error,
                 chat_id,
                 status_message_id,
@@ -240,7 +296,8 @@ def extract_video_info(
             lines.append(f"⏱️ {minutes:02d}:{seconds:02d}")
 
         lines.extend(["", "Выберите формат ниже."])
-        bot.edit_message_text(
+        _safe_edit_message_text(
+            bot,
             ui_manager.format_panel("Видео найдено", lines, icon="✅"),
             chat_id,
             status_message_id,
@@ -259,5 +316,5 @@ def extract_video_info(
                 icon="❌",
             )
 
-        bot.edit_message_text(user_text, chat_id, status_message_id)
+        _safe_edit_message_text(bot, user_text, chat_id, status_message_id)
         logger.error("Ошибка при получении информации о видео %s: %s", url, exc)

@@ -154,6 +154,14 @@ class RetryManager:
             "private",
             "age-restricted",
             "unavailable",
+            "unsupported url",
+            "not a valid url",
+            "no video formats found",
+            "requested format is not available",
+            "requested format not available",
+            "download timed out after",
+            "postprocessing: conversion failed",
+            "conversion failed",
             "no such file",
             "файл не найден после скачивания",
             "invalid url",
@@ -321,17 +329,17 @@ class SmartRetryManager(RetryManager):
 
 
 DOWNLOAD_RETRY_CONFIG = RetryConfig(
-    max_retries=4,
+    max_retries=2,
     initial_delay=2.0,
-    max_delay=60.0,
+    max_delay=20.0,
     strategy=RetryStrategy.EXPONENTIAL,
     exponential_base=1.5,
 )
 
 UPLOAD_RETRY_CONFIG = RetryConfig(
-    max_retries=3,
-    initial_delay=3.0,
-    max_delay=90.0,
+    max_retries=2,
+    initial_delay=2.0,
+    max_delay=20.0,
     strategy=RetryStrategy.EXPONENTIAL,
     exponential_base=2.0,
 )

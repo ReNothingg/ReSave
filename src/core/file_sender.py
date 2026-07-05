@@ -124,6 +124,20 @@ def _video_metadata_from_info(info: dict) -> dict:
     return metadata
 
 
+def _is_upload_transport_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    markers = (
+        "clientdecodeerror",
+        "failed to decode object",
+        "connection reset",
+        "server disconnected",
+        "clientoserror",
+        "request timeout",
+        "timeout error",
+    )
+    return any(marker in error_text for marker in markers)
+
+
 def send_file_with_retry(task, file_path, title, bot):
     from ..utils.error_handler import get_error_handler
     from ..utils.retry_manager import (
@@ -166,29 +180,39 @@ def send_file_with_retry(task, file_path, title, bot):
     def send_operation():
         duration = video_metadata.get("duration") or task.info.get("duration")
         safe_duration = int(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+        caption = MessageTemplate.format_caption(
+            title=original_title,
+            url=task.url,
+            action="audio" if task.action == "audio" else "video",
+            file_size=file_size_mb,
+        )
 
         if task.action == "audio" and file_extension in audio_extensions:
             audio_kwargs = {}
             if safe_duration is not None:
                 audio_kwargs["duration"] = safe_duration
 
-            bot.send_audio(
-                task.chat_id,
-                file_path,
-                title=original_title,
-                performer=task.info.get("uploader", "Unknown"),
-                timeout=300,
-                reply_to_message_id=task.reply_to_id,
-                **audio_kwargs,
-            )
+            try:
+                bot.send_audio(
+                    task.chat_id,
+                    file_path,
+                    title=original_title,
+                    performer=task.info.get("uploader", "Unknown"),
+                    timeout=300,
+                    reply_to_message_id=task.reply_to_id,
+                    **audio_kwargs,
+                )
+            except Exception as exc:
+                if not _is_upload_transport_error(exc):
+                    raise
+                logger.warning(
+                    "Audio upload failed, retrying as document: task_id=%s error=%s",
+                    task.task_id,
+                    exc,
+                )
+                send_as_document(caption)
             return
 
-        caption = MessageTemplate.format_caption(
-            title=original_title,
-            url=task.url,
-            action="video",
-            file_size=file_size_mb,
-        )
         if not config.BOT_API_IS_LOCAL and file_size_bytes > config.SEND_AS_DOC_LIMIT:
             send_as_document(caption)
             return
@@ -207,16 +231,26 @@ def send_file_with_retry(task, file_path, title, bot):
             video_kwargs["width"] = video_metadata["width"]
             video_kwargs["height"] = video_metadata["height"]
 
-        bot.send_video(
-            task.chat_id,
-            file_path,
-            caption=caption,
-            parse_mode="HTML",
-            supports_streaming=True,
-            timeout=600,
-            reply_to_message_id=task.reply_to_id,
-            **video_kwargs,
-        )
+        try:
+            bot.send_video(
+                task.chat_id,
+                file_path,
+                caption=caption,
+                parse_mode="HTML",
+                supports_streaming=True,
+                timeout=600,
+                reply_to_message_id=task.reply_to_id,
+                **video_kwargs,
+            )
+        except Exception as exc:
+            if not _is_upload_transport_error(exc):
+                raise
+            logger.warning(
+                "Video upload failed, retrying as document: task_id=%s error=%s",
+                task.task_id,
+                exc,
+            )
+            send_as_document(caption)
 
     def on_retry(attempt, delay):
         if not task.silent_mode:
