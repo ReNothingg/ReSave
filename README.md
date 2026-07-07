@@ -50,6 +50,7 @@ VIP_USERS=
 ```env
 BOT_API_BASE_URL=http://127.0.0.1:8081
 BOT_API_IS_LOCAL=true
+BOT_API_USE_LOCAL_FILE_PATHS=true
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
 TELEGRAM_API_ID=ваш_api_id
@@ -132,6 +133,7 @@ ADMIN_IDS=123456789
 VIP_USERS=
 TELEGRAM_API_ID=ваш_api_id
 TELEGRAM_API_HASH=ваш_api_hash
+BOT_API_USE_LOCAL_FILE_PATHS=true
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
 MAX_CONCURRENT_DOWNLOADS=1
@@ -181,7 +183,7 @@ python main.py
 | `MAX_CONCURRENT_DOWNLOADS` | Лимит одновременных загрузок |
 | `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
 | `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
-| `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
+| `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL`, `BOT_API_USE_LOCAL_FILE_PATHS` | Локальный Bot API и передача файлов по серверному пути |
 | `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
 | `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |

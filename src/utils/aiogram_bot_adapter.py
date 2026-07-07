@@ -72,13 +72,25 @@ class AiogramSyncBotAdapter:
         )
         return any(marker in error_text for marker in transport_markers)
 
-    def _prepare_file(self, file_obj: Any, *, filename: str | None = None):
+    def _prepare_file(
+        self,
+        file_obj: Any,
+        *,
+        filename: str | None = None,
+        local_upload: bool = False,
+    ):
         if isinstance(file_obj, (FSInputFile, BufferedInputFile)):
             return file_obj
 
         if isinstance(file_obj, (str, os.PathLike)):
             path = str(file_obj)
             if os.path.exists(path):
+                if (
+                    local_upload
+                    and config.BOT_API_USE_LOCAL_FILE_PATHS
+                    and self._is_local_api()
+                ):
+                    return path
                 return FSInputFile(path, filename=filename or Path(path).name)
             return path
 
@@ -157,12 +169,12 @@ class AiogramSyncBotAdapter:
 
     def send_photo(self, chat_id, photo, **kwargs):
         payload = self._normalize_kwargs(kwargs)
-        photo_input = self._prepare_file(photo)
+        photo_input = self._prepare_file(photo, local_upload=True)
         return self._call(self.bot.send_photo(chat_id=chat_id, photo=photo_input, **payload))
 
     def send_video(self, chat_id, video, **kwargs):
         payload = self._normalize_kwargs(kwargs)
-        video_input = self._prepare_file(video)
+        video_input = self._prepare_file(video, local_upload=True)
         return self._call_with_cloud_fallback(
             local_coro_factory=lambda: self.bot.send_video(
                 chat_id=chat_id,
@@ -181,7 +193,11 @@ class AiogramSyncBotAdapter:
     def send_document(self, chat_id, document, **kwargs):
         payload = self._normalize_kwargs(kwargs)
         visible_file_name = payload.pop("_visible_file_name", None)
-        document_input = self._prepare_file(document, filename=visible_file_name)
+        document_input = self._prepare_file(
+            document,
+            filename=visible_file_name,
+            local_upload=True,
+        )
         return self._call_with_cloud_fallback(
             local_coro_factory=lambda: self.bot.send_document(
                 chat_id=chat_id,
@@ -199,7 +215,7 @@ class AiogramSyncBotAdapter:
 
     def send_audio(self, chat_id, audio, **kwargs):
         payload = self._normalize_kwargs(kwargs)
-        audio_input = self._prepare_file(audio)
+        audio_input = self._prepare_file(audio, local_upload=True)
         return self._call_with_cloud_fallback(
             local_coro_factory=lambda: self.bot.send_audio(
                 chat_id=chat_id,
@@ -217,7 +233,7 @@ class AiogramSyncBotAdapter:
 
     def send_animation(self, chat_id, animation, **kwargs):
         payload = self._normalize_kwargs(kwargs)
-        animation_input = self._prepare_file(animation)
+        animation_input = self._prepare_file(animation, local_upload=True)
         return self._call_with_cloud_fallback(
             local_coro_factory=lambda: self.bot.send_animation(
                 chat_id=chat_id,

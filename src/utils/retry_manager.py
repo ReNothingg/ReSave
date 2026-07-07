@@ -1,7 +1,7 @@
 import logging
 import time
 import random
-from typing import Callable, Any, Optional, Type
+from typing import Callable, Any, Optional
 from enum import Enum
 
 logger = logging.getLogger(__name__)

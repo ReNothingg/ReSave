@@ -86,6 +86,7 @@ class ErrorMessages:
     # Ошибки со скачиванием
     DOWNLOAD_FAILED = "❌ Не удалось скачать видео. Попробуйте позже."
     DOWNLOAD_TIMEOUT = "⏱️ Время скачивания истекло. Ссылка может быть неправильной или видео слишком большое."
+    DOWNLOAD_RESOURCE_LIMIT = "⚠️ Сервер не вытянул загрузку или склейку этого видео."
     DOWNLOAD_ERROR = "❌ Ошибка при скачивании видео. Проверьте ссылку и попробуйте снова."
     NETWORK_ERROR = "🌐 Ошибка подключения. Проверьте интернет и повторите попытку."
     
@@ -141,6 +142,10 @@ class ErrorMessages:
             ("file not found", ErrorMessages.UNAVAILABLE_VIDEO),
             
             ("timeout", ErrorMessages.DOWNLOAD_TIMEOUT),
+            ("сервер убил", ErrorMessages.DOWNLOAD_RESOURCE_LIMIT),
+            ("killed by server", ErrorMessages.DOWNLOAD_RESOURCE_LIMIT),
+            ("exit code -9", ErrorMessages.DOWNLOAD_RESOURCE_LIMIT),
+            ("signal 9", ErrorMessages.DOWNLOAD_RESOURCE_LIMIT),
             ("429", ErrorMessages.RATE_LIMIT),
             ("too many requests", ErrorMessages.RATE_LIMIT),
             ("connection", ErrorMessages.NETWORK_ERROR),
@@ -186,6 +191,13 @@ class ErrorMessages:
         else:
             if "timeout" in error_str.lower():
                 message += "\n\n💡 Попробуйте позже или выберите более низкое качество."
+            elif (
+                "сервер убил" in error_str.lower()
+                or "killed by server" in error_str.lower()
+                or "exit code -9" in error_str.lower()
+                or "signal 9" in error_str.lower()
+            ):
+                message += "\n\n💡 Бот уже попробовал качество ниже. Если не прошло, отправьте MP3 или 480p."
             elif "too many requests" in error_str.lower():
                 message += "\n\n💡 Подождите 1-2 минуты и повторите попытку."
             elif "invalid" in error_str.lower():

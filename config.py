@@ -81,6 +81,7 @@ class Settings:
     send_as_doc_limit: int
     bot_api_base_url: str
     bot_api_is_local: bool
+    bot_api_use_local_file_paths: bool
     bot_api_upload_limit: int
     cookies_file: str
     stats_db_path: str
@@ -111,6 +112,10 @@ def build_settings() -> Settings:
         send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", bot_api_upload_limit, minimum=1),
         bot_api_base_url=bot_api_base_url,
         bot_api_is_local=bot_api_is_local,
+        bot_api_use_local_file_paths=_get_bool(
+            "BOT_API_USE_LOCAL_FILE_PATHS",
+            bot_api_is_local,
+        ),
         bot_api_upload_limit=bot_api_upload_limit,
         cookies_file=cookies_file,
         stats_db_path=stats_db_path,
@@ -156,6 +161,7 @@ MAX_FILE_SIZE = SETTINGS.max_file_size
 SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
 BOT_API_BASE_URL = SETTINGS.bot_api_base_url
 BOT_API_IS_LOCAL = SETTINGS.bot_api_is_local
+BOT_API_USE_LOCAL_FILE_PATHS = SETTINGS.bot_api_use_local_file_paths
 BOT_API_UPLOAD_LIMIT = SETTINGS.bot_api_upload_limit
 COOKIES_FILE = SETTINGS.cookies_file
 DB_NAME = SETTINGS.stats_db_path
