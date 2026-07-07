@@ -304,6 +304,9 @@ def _base_ydl_params(variant: DownloadVariant) -> dict:
     if variant.postprocessors:
         ydl_params["postprocessors"] = list(variant.postprocessors)
 
+    if config.DOWNLOAD_RATE_LIMIT_BYTES > 0:
+        ydl_params["ratelimit"] = config.DOWNLOAD_RATE_LIMIT_BYTES
+
     ffmpeg_location = _ffmpeg_location()
     if ffmpeg_location:
         ydl_params["ffmpeg_location"] = ffmpeg_location
@@ -437,6 +440,7 @@ def _unique_heights(values: list[int]) -> list[int]:
 
 
 def _video_height_variants(output_path: str, heights: list[int], *, exact_first: bool = False):
+    capped_heights = [min(height, config.MAX_DOWNLOAD_HEIGHT) for height in heights]
     return [
         DownloadVariant(
             label=f"{height}p",
@@ -444,13 +448,13 @@ def _video_height_variants(output_path: str, heights: list[int], *, exact_first:
             postprocessors=(),
             output_template=f"{output_path}.%(ext)s",
         )
-        for index, height in enumerate(_unique_heights(heights))
+        for index, height in enumerate(_unique_heights(capped_heights))
     ]
 
 
 def _get_download_variants(task, output_path) -> list[DownloadVariant]:
     if task.action == "best":
-        return _video_height_variants(output_path, [1080, 720, 480, 360])
+        return _video_height_variants(output_path, [config.MAX_DOWNLOAD_HEIGHT, 720, 480, 360])
 
     if task.action == "medium":
         return _video_height_variants(output_path, [720, 480, 360])
@@ -478,7 +482,7 @@ def _get_download_variants(task, output_path) -> list[DownloadVariant]:
         return _video_height_variants(output_path, [480, 360])
 
     if task.action == "res" and task.format_param:
-        height = int(task.format_param)
+        height = min(int(task.format_param), config.MAX_DOWNLOAD_HEIGHT)
         fallback_heights = [candidate for candidate in [1080, 720, 480, 360] if candidate < height]
         return _video_height_variants(
             output_path,

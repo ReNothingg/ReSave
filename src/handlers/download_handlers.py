@@ -152,9 +152,16 @@ def _youtube_resolution_buttons(
     if not is_youtube or not resolutions:
         return []
 
-    preferred_order = [4320, 2160, 1440, 1080, 720, 480, 360]
+    max_height = config.MAX_DOWNLOAD_HEIGHT
+    preferred_order = [
+        height for height in [4320, 2160, 1440, 1080, 720, 480, 360] if height <= max_height
+    ]
     available = [height for height in preferred_order if height in resolutions]
-    extra = [height for height in sorted(resolutions.keys(), reverse=True) if height not in available]
+    extra = [
+        height
+        for height in sorted(resolutions.keys(), reverse=True)
+        if height <= max_height and height not in available
+    ]
     heights = (available + extra)[:6]
 
     buttons = [

@@ -81,7 +81,6 @@ class Settings:
     send_as_doc_limit: int
     bot_api_base_url: str
     bot_api_is_local: bool
-    bot_api_use_local_file_paths: bool
     bot_api_upload_limit: int
     cookies_file: str
     stats_db_path: str
@@ -89,6 +88,8 @@ class Settings:
     vip_users: tuple[int, ...]
     log_level: str
     download_timeout_seconds: int
+    download_rate_limit_bytes: int
+    max_download_height: int
     max_video_duration: dict[str, int]
     max_playlist_items: dict[str, int]
 
@@ -112,10 +113,6 @@ def build_settings() -> Settings:
         send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", bot_api_upload_limit, minimum=1),
         bot_api_base_url=bot_api_base_url,
         bot_api_is_local=bot_api_is_local,
-        bot_api_use_local_file_paths=_get_bool(
-            "BOT_API_USE_LOCAL_FILE_PATHS",
-            bot_api_is_local,
-        ),
         bot_api_upload_limit=bot_api_upload_limit,
         cookies_file=cookies_file,
         stats_db_path=stats_db_path,
@@ -123,6 +120,12 @@ def build_settings() -> Settings:
         vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 420, minimum=30),
+        download_rate_limit_bytes=_get_int(
+            "DOWNLOAD_RATE_LIMIT_BYTES",
+            2 * 1024 * 1024,
+            minimum=0,
+        ),
+        max_download_height=_get_int("MAX_DOWNLOAD_HEIGHT", 720, minimum=144),
         max_video_duration={
             "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
             "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
@@ -161,7 +164,6 @@ MAX_FILE_SIZE = SETTINGS.max_file_size
 SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
 BOT_API_BASE_URL = SETTINGS.bot_api_base_url
 BOT_API_IS_LOCAL = SETTINGS.bot_api_is_local
-BOT_API_USE_LOCAL_FILE_PATHS = SETTINGS.bot_api_use_local_file_paths
 BOT_API_UPLOAD_LIMIT = SETTINGS.bot_api_upload_limit
 COOKIES_FILE = SETTINGS.cookies_file
 DB_NAME = SETTINGS.stats_db_path
@@ -170,5 +172,7 @@ ADMIN_IDS = SETTINGS.admin_ids
 VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
 DOWNLOAD_TIMEOUT_SECONDS = SETTINGS.download_timeout_seconds
+DOWNLOAD_RATE_LIMIT_BYTES = SETTINGS.download_rate_limit_bytes
+MAX_DOWNLOAD_HEIGHT = SETTINGS.max_download_height
 MAX_VIDEO_DURATION = SETTINGS.max_video_duration
 MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items
