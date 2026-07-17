@@ -21,7 +21,9 @@
 - Скачивает видео по ссылке с популярных платформ через `yt-dlp`.
 - Поддерживает работу в группах.
 - Грузит видео в фоне и отправляет результат по готовности.
-- Использует очередь и ограничения на пользователя.
+- Показывает все доступные разрешения YouTube, включая 1080p, 1440p, 4K и 8K.
+- Автоматически скачивает и объединяет лучшие video+audio потоки через FFmpeg.
+- Использует общую очередь без платных статусов и пользовательских лимитов.
 - Хранит статистику в SQLite и автоматически мигрирует старый `user_stats.json`.
 - Поддерживает админ-команды и базовую статистику.
 
@@ -40,7 +42,6 @@ pip install -r requirements.txt
 ```env
 BOT_TOKEN=ваш_токен_бота
 ADMIN_IDS=123456789
-VIP_USERS=
 ```
 
 Для отправки файлов больше стандартного лимита Bot API поднимите локальный
@@ -52,8 +53,6 @@ BOT_API_BASE_URL=http://127.0.0.1:8081
 BOT_API_IS_LOCAL=true
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
-MAX_DOWNLOAD_HEIGHT=720
-DOWNLOAD_RATE_LIMIT_BYTES=2097152
 TELEGRAM_API_ID=ваш_api_id
 TELEGRAM_API_HASH=ваш_api_hash
 ```
@@ -83,7 +82,6 @@ Docker не обязателен для работы бота. Но для от�
 ```env
 BOT_TOKEN=ваш_токен_бота
 ADMIN_IDS=123456789
-VIP_USERS=
 MAX_FILE_SIZE=52428800
 SEND_AS_DOC_LIMIT=52428800
 ```
@@ -131,15 +129,11 @@ ssh renothing@ssh-renothing.alwaysdata.net 'chmod +x /home/renothing/.local/bin/
 ```env
 BOT_TOKEN=ваш_токен_бота
 ADMIN_IDS=123456789
-VIP_USERS=
 TELEGRAM_API_ID=ваш_api_id
 TELEGRAM_API_HASH=ваш_api_hash
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
-MAX_DOWNLOAD_HEIGHT=720
-DOWNLOAD_RATE_LIMIT_BYTES=2097152
 MAX_CONCURRENT_DOWNLOADS=1
-MAX_DOWNLOADS_PER_USER=1
 ```
 
 Команда для вкладки Service:
@@ -179,16 +173,12 @@ python main.py
 | Параметр | Назначение |
 |---|---|
 | `BOT_TOKEN` | Токен Telegram-бота (читается из `.env`) |
-| `ADMIN_IDS`, `VIP_USERS` | ID админов и VIP-пользователей |
+| `ADMIN_IDS` | ID администраторов |
 | `TEMP_DIR` | Временная директория для загрузок |
 | `STATS_DB_PATH` | SQLite-файл со статистикой |
-| `MAX_CONCURRENT_DOWNLOADS` | Лимит одновременных загрузок |
-| `MAX_DOWNLOADS_PER_USER` | Лимит активных загрузок на пользователя |
-| `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Ограничения по размеру и порог отправки как документа |
-| `MAX_DOWNLOAD_HEIGHT`, `DOWNLOAD_RATE_LIMIT_BYTES` | Ограничение качества и скорости `yt-dlp`, чтобы shared-хостинг не убивал процесс |
+| `MAX_CONCURRENT_DOWNLOADS` | Число одновременно работающих загрузчиков; остальные задачи ждут в общей очереди |
+| `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Технический предел Telegram Bot API и порог отправки как документа |
 | `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
-| `MAX_VIDEO_DURATION_FREE`, `MAX_VIDEO_DURATION_PREMIUM` | Лимит длительности для free/premium |
-| `MAX_PLAYLIST_ITEMS_FREE`, `MAX_PLAYLIST_ITEMS_PREMIUM` | Лимит элементов плейлиста для free/premium |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |
 
 ## Структура проекта

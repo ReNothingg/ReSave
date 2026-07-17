@@ -407,7 +407,7 @@ def download_and_send_thumbnail(task, bot, temp_dir):
 
         task.file_path = file_path
         file_size = os.path.getsize(file_path)
-        file_size_error = build_file_size_limit_error(task.chat_id, file_size)
+        file_size_error = build_file_size_limit_error(file_size)
         if file_size_error:
             raise RuntimeError(file_size_error)
 

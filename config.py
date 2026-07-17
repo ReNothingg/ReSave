@@ -76,7 +76,6 @@ class Settings:
     bot_token: str
     temp_dir: str
     max_concurrent_downloads: int
-    max_downloads_per_user: int
     max_file_size: int
     send_as_doc_limit: int
     bot_api_base_url: str
@@ -85,13 +84,8 @@ class Settings:
     cookies_file: str
     stats_db_path: str
     admin_ids: tuple[int, ...]
-    vip_users: tuple[int, ...]
     log_level: str
     download_timeout_seconds: int
-    download_rate_limit_bytes: int
-    max_download_height: int
-    max_video_duration: dict[str, int]
-    max_playlist_items: dict[str, int]
 
 
 def build_settings() -> Settings:
@@ -108,7 +102,6 @@ def build_settings() -> Settings:
         bot_token=_get_str("BOT_TOKEN"),
         temp_dir=temp_dir,
         max_concurrent_downloads=_get_int("MAX_CONCURRENT_DOWNLOADS", 1, minimum=1),
-        max_downloads_per_user=_get_int("MAX_DOWNLOADS_PER_USER", 1, minimum=0),
         max_file_size=_get_int("MAX_FILE_SIZE", 2 * 1024 * 1024 * 1024, minimum=1),
         send_as_doc_limit=_get_int("SEND_AS_DOC_LIMIT", bot_api_upload_limit, minimum=1),
         bot_api_base_url=bot_api_base_url,
@@ -117,23 +110,8 @@ def build_settings() -> Settings:
         cookies_file=cookies_file,
         stats_db_path=stats_db_path,
         admin_ids=_get_id_list("ADMIN_IDS"),
-        vip_users=_get_id_list("VIP_USERS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
-        download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 420, minimum=30),
-        download_rate_limit_bytes=_get_int(
-            "DOWNLOAD_RATE_LIMIT_BYTES",
-            2 * 1024 * 1024,
-            minimum=0,
-        ),
-        max_download_height=_get_int("MAX_DOWNLOAD_HEIGHT", 720, minimum=144),
-        max_video_duration={
-            "free": _get_int("MAX_VIDEO_DURATION_FREE", 900, minimum=0),
-            "premium": _get_int("MAX_VIDEO_DURATION_PREMIUM", 10800, minimum=0),
-        },
-        max_playlist_items={
-            "free": _get_int("MAX_PLAYLIST_ITEMS_FREE", 0, minimum=0),
-            "premium": _get_int("MAX_PLAYLIST_ITEMS_PREMIUM", 50, minimum=0),
-        },
+        download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 1800, minimum=30),
     )
 
 
@@ -159,7 +137,6 @@ SETTINGS = build_settings()
 BOT_TOKEN = SETTINGS.bot_token
 TEMP_DIR = SETTINGS.temp_dir
 MAX_CONCURRENT_DOWNLOADS = SETTINGS.max_concurrent_downloads
-MAX_DOWNLOADS_PER_USER = SETTINGS.max_downloads_per_user
 MAX_FILE_SIZE = SETTINGS.max_file_size
 SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
 BOT_API_BASE_URL = SETTINGS.bot_api_base_url
@@ -169,10 +146,5 @@ COOKIES_FILE = SETTINGS.cookies_file
 DB_NAME = SETTINGS.stats_db_path
 STATS_DB_PATH = SETTINGS.stats_db_path
 ADMIN_IDS = SETTINGS.admin_ids
-VIP_USERS = SETTINGS.vip_users
 LOG_LEVEL = SETTINGS.log_level
 DOWNLOAD_TIMEOUT_SECONDS = SETTINGS.download_timeout_seconds
-DOWNLOAD_RATE_LIMIT_BYTES = SETTINGS.download_rate_limit_bytes
-MAX_DOWNLOAD_HEIGHT = SETTINGS.max_download_height
-MAX_VIDEO_DURATION = SETTINGS.max_video_duration
-MAX_PLAYLIST_ITEMS = SETTINGS.max_playlist_items

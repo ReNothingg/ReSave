@@ -238,7 +238,7 @@ def _download_and_send_video(task, bot, temp_dir):
 
     task.file_path = str(file_path)
     file_size_bytes = os.path.getsize(file_path)
-    file_size_error = build_file_size_limit_error(task.chat_id, file_size_bytes)
+    file_size_error = build_file_size_limit_error(file_size_bytes)
     if file_size_error:
         raise RuntimeError(file_size_error)
 
@@ -303,9 +303,6 @@ def _base_ydl_params(variant: DownloadVariant) -> dict:
 
     if variant.postprocessors:
         ydl_params["postprocessors"] = list(variant.postprocessors)
-
-    if config.DOWNLOAD_RATE_LIMIT_BYTES > 0:
-        ydl_params["ratelimit"] = config.DOWNLOAD_RATE_LIMIT_BYTES
 
     ffmpeg_location = _ffmpeg_location()
     if ffmpeg_location:
@@ -412,20 +409,15 @@ def _format_download_failure(errors: list[str]) -> str:
 def _height_format(height: int, *, exact_first: bool = False) -> str:
     if exact_first:
         return (
-            f"best[height={height}][ext=mp4]/"
-            f"bv*[height={height}][ext=mp4]+ba[ext=m4a]/"
             f"bv*[height={height}]+ba/"
-            f"best[height<={height}][ext=mp4]/"
-            f"best[height<={height}]/"
-            f"bv*[height<={height}][ext=mp4]+ba[ext=m4a]/"
-            f"bv*[height<={height}]+ba/best"
+            f"b[height={height}]/"
+            f"bv*[height<={height}]+ba/"
+            f"b[height<={height}]"
         )
 
     return (
-        f"best[height<={height}][ext=mp4]/"
-        f"best[height<={height}]/"
-        f"bv*[height<={height}][ext=mp4]+ba[ext=m4a]/"
-        f"bv*[height<={height}]+ba/best"
+        f"bv*[height<={height}]+ba/"
+        f"b[height<={height}]"
     )
 
 
@@ -440,7 +432,6 @@ def _unique_heights(values: list[int]) -> list[int]:
 
 
 def _video_height_variants(output_path: str, heights: list[int], *, exact_first: bool = False):
-    capped_heights = [min(height, config.MAX_DOWNLOAD_HEIGHT) for height in heights]
     return [
         DownloadVariant(
             label=f"{height}p",
@@ -448,13 +439,28 @@ def _video_height_variants(output_path: str, heights: list[int], *, exact_first:
             postprocessors=(),
             output_template=f"{output_path}.%(ext)s",
         )
-        for index, height in enumerate(_unique_heights(capped_heights))
+        for index, height in enumerate(_unique_heights(heights))
     ]
 
 
 def _get_download_variants(task, output_path) -> list[DownloadVariant]:
     if task.action == "best":
-        return _video_height_variants(output_path, [config.MAX_DOWNLOAD_HEIGHT, 720, 480, 360])
+        maximum_variant = DownloadVariant(
+            label="максимальное качество",
+            format="bv*+ba/b",
+            postprocessors=(),
+            output_template=f"{output_path}.%(ext)s",
+        )
+        available_heights = sorted(
+            {
+                int(item["height"])
+                for item in task.info.get("formats", [])
+                if item.get("height") and item.get("vcodec", "none") != "none"
+            },
+            reverse=True,
+        )
+        fallback_heights = available_heights or [4320, 2160, 1440, 1080, 720, 480, 360]
+        return [maximum_variant, *_video_height_variants(output_path, fallback_heights)]
 
     if task.action == "medium":
         return _video_height_variants(output_path, [720, 480, 360])
@@ -482,8 +488,8 @@ def _get_download_variants(task, output_path) -> list[DownloadVariant]:
         return _video_height_variants(output_path, [480, 360])
 
     if task.action == "res" and task.format_param:
-        height = min(int(task.format_param), config.MAX_DOWNLOAD_HEIGHT)
-        fallback_heights = [candidate for candidate in [1080, 720, 480, 360] if candidate < height]
+        height = int(task.format_param)
+        fallback_heights = [candidate for candidate in [2160, 1440, 1080, 720, 480, 360] if candidate < height]
         return _video_height_variants(
             output_path,
             [height, *fallback_heights],

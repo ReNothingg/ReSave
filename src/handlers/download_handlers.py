@@ -3,7 +3,6 @@ import logging
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-import config
 from aiogram import Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -18,7 +17,6 @@ from .download_processing import (
     extract_video_info as _extract_video_info,
     handle_group_download as _handle_group_download,
 )
-from ..utils.message_templates import ErrorMessages
 from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
@@ -42,20 +40,6 @@ def set_download_manager(manager):
 
 def get_download_manager():
     return _download_manager
-
-
-def _build_download_limit_text(chat_id: int) -> str:
-    ui_manager = get_ui_manager()
-    active_downloads = _download_manager.get_user_task_count(chat_id) if _download_manager else 0
-    return ui_manager.format_panel(
-        "Лимит активных загрузок",
-        [
-            ErrorMessages.CONCURRENT_LIMIT,
-            "",
-            f"Активных загрузок: {active_downloads}/{config.MAX_DOWNLOADS_PER_USER}",
-        ],
-        icon="⏸️",
-    )
 
 
 def _build_download_markup(message_id: int, info: dict, resolutions: dict[int, dict]) -> InlineKeyboardMarkup:
@@ -152,17 +136,7 @@ def _youtube_resolution_buttons(
     if not is_youtube or not resolutions:
         return []
 
-    max_height = config.MAX_DOWNLOAD_HEIGHT
-    preferred_order = [
-        height for height in [4320, 2160, 1440, 1080, 720, 480, 360] if height <= max_height
-    ]
-    available = [height for height in preferred_order if height in resolutions]
-    extra = [
-        height
-        for height in sorted(resolutions.keys(), reverse=True)
-        if height <= max_height and height not in available
-    ]
-    heights = (available + extra)[:6]
+    heights = sorted(resolutions.keys(), reverse=True)
 
     buttons = [
         InlineKeyboardButton(
@@ -359,17 +333,14 @@ def register_download_handlers(router: Router, sync_bot):
                     icon="🖼️",
                 )
             )
-            try:
-                _download_manager.add_task(
-                    url=url,
-                    chat_id=message.chat.id,
-                    message_id=status_message.message_id,
-                    info={"title": "TikTok photo", "duration": None},
-                    action="tiktok_photo",
-                    reply_to_id=message.message_id,
-                )
-            except ValueError:
-                await status_message.edit_text(_build_download_limit_text(message.chat.id))
+            _download_manager.add_task(
+                url=url,
+                chat_id=message.chat.id,
+                message_id=status_message.message_id,
+                info={"title": "TikTok photo", "duration": None},
+                action="tiktok_photo",
+                reply_to_id=message.message_id,
+            )
             return
 
         status_message = await message.reply(
@@ -407,11 +378,6 @@ def register_download_handlers(router: Router, sync_bot):
             return
 
         download_info = video_info_cache[original_message_id]
-        if not _download_manager.can_add_task(call.message.chat.id):
-            await call.answer("Лимит активных загрузок достигнут.", show_alert=True)
-            await call.message.edit_text(_build_download_limit_text(call.message.chat.id))
-            return
-
         await call.answer("Начинаю скачивание.")
         await call.message.edit_text(
             ui_manager.format_panel(
@@ -423,18 +389,14 @@ def register_download_handlers(router: Router, sync_bot):
 
         format_param = int(parts[2]) if action == "res" else None
         url = download_info["url"]
-        try:
-            _download_manager.add_task(
-                url=url,
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                info=download_info["info"],
-                action=action,
-                format_param=format_param,
-            )
-        except ValueError:
-            await call.message.edit_text(_build_download_limit_text(call.message.chat.id))
-            return
+        _download_manager.add_task(
+            url=url,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            info=download_info["info"],
+            action=action,
+            format_param=format_param,
+        )
 
         video_info_cache.pop(original_message_id, None)
 
@@ -525,6 +487,5 @@ def extract_video_info(
         status_message_id,
         cache,
         download_manager=_download_manager,
-        build_download_limit_text=_build_download_limit_text,
         build_download_markup=_build_download_markup,
     )

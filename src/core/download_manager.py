@@ -52,12 +52,6 @@ class DownloadManager:
                 if task.chat_id == chat_id and task.status in {"pending", "downloading"}
             )
 
-    def can_add_task(self, chat_id):
-        if chat_id <= 0 or config.MAX_DOWNLOADS_PER_USER <= 0:
-            return True
-
-        return self.get_user_task_count(chat_id) < config.MAX_DOWNLOADS_PER_USER
-
     def add_task(
         self,
         url,
@@ -82,16 +76,6 @@ class DownloadManager:
         )
 
         with self.lock:
-            if chat_id > 0 and config.MAX_DOWNLOADS_PER_USER > 0:
-                active_tasks = sum(
-                    1
-                    for existing_task in self.tasks.values()
-                    if existing_task.chat_id == chat_id
-                    and existing_task.status in {"pending", "downloading"}
-                )
-                if active_tasks >= config.MAX_DOWNLOADS_PER_USER:
-                    raise ValueError("too many active downloads for user")
-
             self.tasks[task.task_id] = task
             self.task_queue.put(task)
 

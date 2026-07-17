@@ -3,11 +3,7 @@ from __future__ import annotations
 import logging
 
 import config
-from ..core.access import (
-    build_duration_limit_error,
-    build_playlist_limit_error,
-    collect_playlist_entries,
-)
+from ..core.access import collect_playlist_entries
 from ..utils.ui_manager import get_ui_manager
 
 logger = logging.getLogger(__name__)
@@ -90,7 +86,7 @@ def queue_playlist_downloads(
                 "uploader": entry.get("uploader") or info.get("uploader"),
                 "duration": entry.get("duration"),
             },
-            action="medium",
+            action="best",
             reply_to_id=reply_to_id,
             silent_mode=silent_mode,
         )
@@ -107,7 +103,7 @@ def build_playlist_queued_text(info: dict, queued_count: int) -> str:
         [
             f"Название: {playlist_title}",
             f"Видео в очереди: {queued_count}",
-            "Качество: 720p",
+            "Качество: максимальное доступное",
             "",
             "Файлы будут приходить по мере готовности.",
         ],
@@ -153,10 +149,6 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
 
         if info.get("_type") == "playlist":
             playlist_entries = collect_playlist_entries(info)
-            playlist_error = build_playlist_limit_error(chat_id, len(playlist_entries))
-            if playlist_error:
-                logger.info("Плейлист %s в группе %s отклонен: %s", url, chat_id, playlist_error)
-                return
             queue_playlist_downloads(
                 download_manager=download_manager,
                 chat_id=chat_id,
@@ -167,17 +159,12 @@ def handle_group_download(url: str, chat_id: int, message_id: int, download_mana
             )
             return
 
-        duration_error = build_duration_limit_error(chat_id, info.get("duration"))
-        if duration_error:
-            logger.info("Ссылка %s в группе %s отклонена: %s", url, chat_id, duration_error)
-            return
-
         download_manager.add_task(
             url=url,
             chat_id=chat_id,
             message_id=message_id,
             info=info,
-            action="medium",
+            action="best",
             reply_to_id=message_id,
             silent_mode=True,
         )
@@ -196,7 +183,6 @@ def extract_video_info(
     cache: dict[int, dict],
     *,
     download_manager,
-    build_download_limit_text,
     build_download_markup,
 ):
     ui_manager = get_ui_manager()
@@ -215,33 +201,14 @@ def extract_video_info(
 
         if info.get("_type") == "playlist":
             playlist_entries = collect_playlist_entries(info)
-            playlist_error = build_playlist_limit_error(chat_id, len(playlist_entries))
-            if playlist_error:
-                _safe_edit_message_text(
-                    bot,
-                    playlist_error,
-                    chat_id,
-                    status_message_id,
-                )
-                return
-
-            try:
-                queued_count = queue_playlist_downloads(
-                    download_manager=download_manager,
-                    chat_id=chat_id,
-                    message_id=status_message_id,
-                    reply_to_id=user_message_id,
-                    info=info,
-                    silent_mode=True,
-                )
-            except ValueError:
-                _safe_edit_message_text(
-                    bot,
-                    build_download_limit_text(chat_id),
-                    chat_id,
-                    status_message_id,
-                )
-                return
+            queued_count = queue_playlist_downloads(
+                download_manager=download_manager,
+                chat_id=chat_id,
+                message_id=status_message_id,
+                reply_to_id=user_message_id,
+                info=info,
+                silent_mode=True,
+            )
 
             if queued_count == 0:
                 _safe_edit_message_text(
@@ -255,16 +222,6 @@ def extract_video_info(
             _safe_edit_message_text(
                 bot,
                 build_playlist_queued_text(info, queued_count),
-                chat_id,
-                status_message_id,
-            )
-            return
-
-        duration_error = build_duration_limit_error(chat_id, info.get("duration"))
-        if duration_error:
-            _safe_edit_message_text(
-                bot,
-                duration_error,
                 chat_id,
                 status_message_id,
             )
