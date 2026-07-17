@@ -20,6 +20,8 @@ export PATH="$HOME/.local/bin:$HOME/ffmpeg/ffmpeg-7.0.2-amd64-static:$PATH"
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export MAX_CONCURRENT_DOWNLOADS="${MAX_CONCURRENT_DOWNLOADS:-1}"
+export DOWNLOAD_RATE_LIMIT_BYTES="${DOWNLOAD_RATE_LIMIT_BYTES:-4194304}"
+export DOWNLOAD_STALL_TIMEOUT_SECONDS="${DOWNLOAD_STALL_TIMEOUT_SECONDS:-300}"
 
 cd "$APP_DIR"
 
@@ -103,7 +105,15 @@ cleanup() {
     rm -rf "$LOCK_DIR"
   fi
 }
-trap cleanup EXIT HUP INT TERM
+
+shutdown() {
+  trap - EXIT HUP INT TERM
+  cleanup
+  exit 0
+}
+
+trap cleanup EXIT
+trap shutdown HUP INT TERM
 
 acquire_lock
 

@@ -179,6 +179,8 @@ python main.py
 | `MAX_CONCURRENT_DOWNLOADS` | Число одновременно работающих загрузчиков; остальные задачи ждут в общей очереди |
 | `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Технический предел Telegram Bot API и порог отправки как документа |
 | `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
+| `DOWNLOAD_RATE_LIMIT_BYTES` | Техническое ограничение скорости загрузчика для защиты Service от SIGKILL; `4194304` по умолчанию |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Перезапуск формата, если загрузчик не показывает прогресс; `300` секунд по умолчанию |
 | `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |
 
 ## Структура проекта

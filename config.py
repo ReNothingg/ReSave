@@ -86,6 +86,8 @@ class Settings:
     admin_ids: tuple[int, ...]
     log_level: str
     download_timeout_seconds: int
+    download_stall_timeout_seconds: int
+    download_rate_limit_bytes: int
 
 
 def build_settings() -> Settings:
@@ -112,6 +114,16 @@ def build_settings() -> Settings:
         admin_ids=_get_id_list("ADMIN_IDS"),
         log_level=_get_str("LOG_LEVEL", "INFO").upper() or "INFO",
         download_timeout_seconds=_get_int("DOWNLOAD_TIMEOUT_SECONDS", 1800, minimum=30),
+        download_stall_timeout_seconds=_get_int(
+            "DOWNLOAD_STALL_TIMEOUT_SECONDS",
+            300,
+            minimum=30,
+        ),
+        download_rate_limit_bytes=_get_int(
+            "DOWNLOAD_RATE_LIMIT_BYTES",
+            4 * 1024 * 1024,
+            minimum=0,
+        ),
     )
 
 
@@ -148,3 +160,5 @@ STATS_DB_PATH = SETTINGS.stats_db_path
 ADMIN_IDS = SETTINGS.admin_ids
 LOG_LEVEL = SETTINGS.log_level
 DOWNLOAD_TIMEOUT_SECONDS = SETTINGS.download_timeout_seconds
+DOWNLOAD_STALL_TIMEOUT_SECONDS = SETTINGS.download_stall_timeout_seconds
+DOWNLOAD_RATE_LIMIT_BYTES = SETTINGS.download_rate_limit_bytes

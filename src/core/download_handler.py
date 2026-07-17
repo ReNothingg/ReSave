@@ -80,17 +80,19 @@ def _stop_process(process: multiprocessing.Process):
         process.join(5)
 
 
-def _drain_download_events(event_queue, task) -> tuple | None:
+def _drain_download_events(event_queue, task) -> tuple[tuple | None, bool]:
     result = None
+    progress_seen = False
 
     while True:
         try:
             event = event_queue.get_nowait()
         except Empty:
-            return result
+            return result, progress_seen
 
         event_type = event[0]
         if event_type == "progress":
+            progress_seen = True
             _, downloaded, total = event
             if total:
                 task.progress = min(1.0, max(0.0, downloaded / total))
@@ -112,12 +114,15 @@ def _download_with_timeout(url: str, ydl_params: dict, timeout_seconds: int, tas
     process.start()
 
     deadline = time.monotonic() + timeout_seconds
+    last_activity = time.monotonic()
     result = None
 
     while process.is_alive():
-        drained = _drain_download_events(event_queue, task)
+        drained, progress_seen = _drain_download_events(event_queue, task)
         if drained:
             result = drained
+        if progress_seen:
+            last_activity = time.monotonic()
 
         if task.cancel_event.is_set():
             _stop_process(process)
@@ -127,9 +132,16 @@ def _download_with_timeout(url: str, ydl_params: dict, timeout_seconds: int, tas
             _stop_process(process)
             raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
 
+        if time.monotonic() - last_activity >= config.DOWNLOAD_STALL_TIMEOUT_SECONDS:
+            _stop_process(process)
+            raise TimeoutError(
+                "Download made no progress for "
+                f"{config.DOWNLOAD_STALL_TIMEOUT_SECONDS} seconds"
+            )
+
         process.join(0.25)
 
-    drained = _drain_download_events(event_queue, task)
+    drained, _ = _drain_download_events(event_queue, task)
     if drained:
         result = drained
 
@@ -280,9 +292,12 @@ def _base_ydl_params(variant: DownloadVariant) -> dict:
         "outtmpl": variant.output_template,
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,
         "noplaylist": True,
         "merge_output_format": "mp4",
         "http_chunk_size": 5 * 1024 * 1024,
+        "buffersize": 64 * 1024,
+        "noresizebuffer": True,
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
@@ -303,6 +318,9 @@ def _base_ydl_params(variant: DownloadVariant) -> dict:
 
     if variant.postprocessors:
         ydl_params["postprocessors"] = list(variant.postprocessors)
+
+    if config.DOWNLOAD_RATE_LIMIT_BYTES > 0:
+        ydl_params["ratelimit"] = config.DOWNLOAD_RATE_LIMIT_BYTES
 
     ffmpeg_location = _ffmpeg_location()
     if ffmpeg_location:
