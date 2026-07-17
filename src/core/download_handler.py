@@ -1,8 +1,6 @@
 import logging
-import multiprocessing
 import os
 from dataclasses import dataclass
-from queue import Empty, Full
 import shutil
 import time
 
@@ -37,129 +35,50 @@ class DownloadVariant:
     output_template: str
 
 
-def _queue_event(event_queue, event: tuple, *, block: bool = False):
-    try:
-        if block:
-            event_queue.put(event, timeout=5)
-        else:
-            event_queue.put_nowait(event)
-    except Full:
-        pass
+def _download_with_timeout(url: str, ydl_params: dict, timeout_seconds: int, task):
+    """Run yt-dlp in the DownloadManager thread without forking the bot."""
+    started_at = time.monotonic()
+    deadline = started_at + timeout_seconds
+    last_activity = started_at
+    last_downloaded = -1
 
-
-def _yt_dlp_download_worker(url: str, ydl_params: dict, event_queue):
     def progress_hook(data):
+        nonlocal last_activity, last_downloaded
+        now = time.monotonic()
+
+        if task.cancel_event.is_set():
+            raise RuntimeError("Загрузка отменена пользователем")
+        if now >= deadline:
+            raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
+
         status = data.get("status")
         if status == "downloading":
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
             downloaded = data.get("downloaded_bytes", 0)
-            if total:
-                _queue_event(event_queue, ("progress", downloaded, total))
-        elif status == "finished":
-            _queue_event(event_queue, ("progress", 1, 1))
-
-    try:
-        child_params = dict(ydl_params)
-        child_params["progress_hooks"] = [progress_hook]
-        with yt_dlp.YoutubeDL(child_params) as ydl:
-            ydl.download([url])
-    except BaseException as exc:
-        _queue_event(event_queue, ("error", type(exc).__name__, str(exc)), block=True)
-    else:
-        _queue_event(event_queue, ("ok", "", ""), block=True)
-
-
-def _stop_process(process: multiprocessing.Process):
-    if not process.is_alive():
-        return
-
-    process.terminate()
-    process.join(5)
-    if process.is_alive():
-        process.kill()
-        process.join(5)
-
-
-def _drain_download_events(event_queue, task) -> tuple[tuple | None, bool]:
-    result = None
-    progress_seen = False
-
-    while True:
-        try:
-            event = event_queue.get_nowait()
-        except Empty:
-            return result, progress_seen
-
-        event_type = event[0]
-        if event_type == "progress":
-            progress_seen = True
-            _, downloaded, total = event
+            if downloaded != last_downloaded:
+                last_activity = now
+                last_downloaded = downloaded
             if total:
                 task.progress = min(1.0, max(0.0, downloaded / total))
-        elif event_type in {"ok", "error"}:
-            result = event
+        elif status == "finished":
+            task.progress = 1.0
+            last_activity = now
+            last_downloaded = -1
 
-
-def _download_with_timeout(url: str, ydl_params: dict, timeout_seconds: int, task):
-    child_params = dict(ydl_params)
-    child_params.pop("progress_hooks", None)
-
-    task.progress = 0.0
-    event_queue = multiprocessing.Queue(maxsize=100)
-    process = multiprocessing.Process(
-        target=_yt_dlp_download_worker,
-        args=(url, child_params, event_queue),
-        daemon=True,
-    )
-    process.start()
-
-    deadline = time.monotonic() + timeout_seconds
-    last_activity = time.monotonic()
-    result = None
-
-    while process.is_alive():
-        drained, progress_seen = _drain_download_events(event_queue, task)
-        if drained:
-            result = drained
-        if progress_seen:
-            last_activity = time.monotonic()
-
-        if task.cancel_event.is_set():
-            _stop_process(process)
-            raise RuntimeError("Загрузка отменена пользователем")
-
-        if time.monotonic() >= deadline:
-            _stop_process(process)
-            raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
-
-        if time.monotonic() - last_activity >= config.DOWNLOAD_STALL_TIMEOUT_SECONDS:
-            _stop_process(process)
+        if now - last_activity >= config.DOWNLOAD_STALL_TIMEOUT_SECONDS:
             raise TimeoutError(
                 "Download made no progress for "
                 f"{config.DOWNLOAD_STALL_TIMEOUT_SECONDS} seconds"
             )
 
-        process.join(0.25)
+    params = dict(ydl_params)
+    params["progress_hooks"] = [progress_hook]
+    task.progress = 0.0
 
-    drained, _ = _drain_download_events(event_queue, task)
-    if drained:
-        result = drained
+    with yt_dlp.YoutubeDL(params) as ydl:
+        ydl.download([url])
 
-    if result:
-        status, error_type, message = result
-        if status == "ok":
-            task.progress = 1.0
-            return
-        raise RuntimeError(f"{error_type}: {message}")
-
-    if process.exitcode:
-        if process.exitcode < 0:
-            signal_number = abs(process.exitcode)
-            raise RuntimeError(
-                "yt-dlp download process was killed by server "
-                f"(signal {signal_number}, exit code {process.exitcode})"
-            )
-        raise RuntimeError(f"yt-dlp exited with code {process.exitcode}")
+    task.progress = 1.0
 
 
 def _ffmpeg_location() -> str | None:
