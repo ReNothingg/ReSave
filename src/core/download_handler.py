@@ -121,9 +121,6 @@ def handle_download_task(task, bot, temp_dir):
                     ),
                 )
 
-            from ..utils.message_templates import ErrorMessages
-
-            if "ffmpeg" in error_text.lower():
                 if task.action == "gif":
                     user_message = ErrorMessages.GIF_FFMPEG_MISSING
                 else:
@@ -143,8 +140,8 @@ def handle_download_task(task, bot, temp_dir):
         if task.file_path and os.path.exists(task.file_path):
             try:
                 os.remove(task.file_path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not remove file {task.file_path}: {e}")
         if task.work_dir and os.path.exists(task.work_dir):
             try:
                 shutil.rmtree(task.work_dir, ignore_errors=True)
