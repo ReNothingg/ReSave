@@ -1,221 +1,199 @@
+from __future__ import annotations
+
 import asyncio
-import io
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
+from typing import IO
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import config
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 
+import config
 from src.core.download_manager import DownloadManager
-from src.core.user_stats import get_stats_manager
-from src.handlers.admin_handlers import register_admin_handlers
-from src.handlers.command_handlers import register_command_handlers
-from src.handlers.download_handlers import (
-    register_download_handlers,
-    set_download_manager,
-)
-from src.utils.aiogram_bot_adapter import AiogramSyncBotAdapter
-from src.utils.ffmpeg_handler import ensure_ffmpeg
-from src.utils.file_utils import cleanup_old_files, ensure_temp_dir
-from src.utils.telegram_bot_wrapper import TelegramBotWrapper
+from src.core.media_downloader import MediaDownloader
+from src.core.media_pipeline import MediaPipeline
+from src.core.selection_store import SelectionStore
+from src.core.telegram_gateway import TelegramGateway
+from src.core.user_stats import UserStatsManager, set_stats_manager
+from src.core.video_info import VideoInfoService
+from src.handlers.admin_handlers import build_admin_router
+from src.handlers.command_handlers import build_command_router
+from src.handlers.download_handlers import build_download_router
+from src.utils.file_utils import cleanup_old_files
 
-
-class UnicodeStreamHandler(logging.StreamHandler):
-    def __init__(self):
-        super().__init__(sys.stdout)
-        if sys.platform == "win32":
-            self.stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-
-_file_handler = logging.FileHandler("bot.log", encoding="utf-8")
-_stream_handler = UnicodeStreamHandler()
-_log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
-
-logging.basicConfig(
-    level=_log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[_file_handler, _stream_handler],
-)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def acquire_instance_lock(lock_path: str | os.PathLike | None = None):
-    """Hold an advisory process lock for the lifetime of the returned file."""
+def configure_logging(settings: config.Settings) -> None:
+    settings.log_file.parent.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(settings.log_file, encoding="utf-8"),
+    ]
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+
+
+def acquire_instance_lock(path: Path | None = None) -> IO[str] | None:
     import fcntl
 
-    path = Path(lock_path or (Path(__file__).resolve().parent / ".resave.lock"))
-    lock_file = path.open("a+", encoding="ascii")
+    lock_path = path or Path(__file__).resolve().with_name(".resave.lock")
+    handle = lock_path.open("a+", encoding="ascii")
     try:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        lock_file.close()
+        handle.close()
         return None
-
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
-    return lock_file
-
-
-async def ensure_bot_api_available(bot: Bot, settings: config.Settings):
-    try:
-        await bot.get_me()
-    except TelegramNetworkError as exc:
-        if settings.bot_api_base_url:
-            raise RuntimeError(
-                "Локальный Telegram Bot API недоступен по адресу "
-                f"{settings.bot_api_base_url}. Запустите локальный "
-                "telegram-bot-api любым доступным способом или уберите "
-                "BOT_API_BASE_URL из .env, чтобы вернуться к облачному "
-                "Bot API с лимитом 50 MB."
-            ) from exc
-        raise
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 
-async def setup_bot_commands(bot, BotCommand, BotCommandScopeChat):
-    commands = [
+async def setup_commands(bot: Bot, admin_ids: tuple[int, ...]) -> None:
+    common = [
         BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="help", description="Помощь и инструкция"),
-        BotCommand(command="status", description="Статус текущих загрузок"),
+        BotCommand(command="help", description="Инструкция"),
+        BotCommand(command="status", description="Текущие загрузки"),
         BotCommand(command="stats", description="Ваша статистика"),
-        BotCommand(command="cancel", description="Отменить текущую загрузку"),
+        BotCommand(command="cancel", description="Отменить загрузки"),
     ]
-    admin_commands = [
+    admin = [
         BotCommand(command="admin", description="Панель администратора"),
-        BotCommand(command="broadcast", description="Рассылка пользователям"),
-        BotCommand(command="stats_global", description="Глобальная статистика"),
+        BotCommand(command="broadcast", description="Рассылка"),
+        BotCommand(command="stats_global", description="Общая статистика"),
     ]
-
-    await bot.set_my_commands(commands)
-
-    for admin_id in config.ADMIN_IDS:
+    await bot.set_my_commands(common)
+    for admin_id in admin_ids:
         try:
             await bot.set_my_commands(
-                commands + admin_commands,
+                common + admin,
                 scope=BotCommandScopeChat(chat_id=admin_id),
             )
         except Exception as exc:
-            logger.debug("Не удалось установить команды для админа %s: %s", admin_id, exc)
+            logger.warning("Cannot set commands for admin %s: %s", admin_id, exc)
 
 
-async def notify_admins_async(bot, text: str):
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, text)
-        except Exception as exc:
-            logger.error("Не удалось уведомить администратора %s: %s", admin_id, exc)
-
-
-async def run():
-    settings = config.validate_settings()
-
-    ensure_temp_dir(settings.temp_dir)
-    cleanup_old_files(settings.temp_dir)
-
-    logger.info("Инициализация менеджера загрузок...")
-    download_manager = DownloadManager(
-        max_concurrent_downloads=settings.max_concurrent_downloads,
-        max_retries=3,
+def build_bot(settings: config.Settings) -> tuple[Bot, Bot | None]:
+    if not settings.bot_api_base_url:
+        return Bot(token=settings.bot_token), None
+    api = TelegramAPIServer.from_base(
+        settings.bot_api_base_url,
+        is_local=settings.bot_api_is_local,
     )
-
-    logger.info("Инициализация менеджера статистики...")
-    get_stats_manager()
-
-    logger.info("Инициализация aiogram...")
-    session = None
-    if settings.bot_api_base_url:
-        api_server = TelegramAPIServer.from_base(
-            settings.bot_api_base_url,
-            is_local=settings.bot_api_is_local,
-        )
-        session = AiohttpSession(api=api_server, timeout=600)
-        logger.info(
-            "Используется Bot API server: %s (local=%s)",
-            settings.bot_api_base_url,
-            settings.bot_api_is_local,
-        )
-
+    session = AiohttpSession(api=api, timeout=600)
     bot = Bot(token=settings.bot_token, session=session)
-    cloud_upload_bot = (
-        Bot(token=settings.bot_token)
-        if settings.bot_api_base_url and settings.bot_api_is_local
-        else None
+    cloud_bot = Bot(token=settings.bot_token) if settings.bot_api_is_local else None
+    return bot, cloud_bot
+
+
+async def run(settings: config.Settings | None = None) -> None:
+    settings = config.validate_settings(settings)
+    configure_logging(settings)
+    settings.temp_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_old_files(str(settings.temp_dir), max_age_hours=24)
+
+    bot, cloud_bot = build_bot(settings)
+    stats = UserStatsManager(settings.stats_db_path)
+    set_stats_manager(stats)
+    telegram = TelegramGateway(
+        bot,
+        cloud_bot=cloud_bot,
+        local_api=settings.bot_api_is_local,
+        use_file_uri=settings.bot_api_use_file_uri,
+        cloud_upload_limit=config.CLOUD_BOT_API_UPLOAD_LIMIT,
+    )
+    downloader = MediaDownloader(settings)
+    pipeline = MediaPipeline(settings, downloader, telegram, stats)
+    manager = DownloadManager(
+        processor=pipeline.process,
+        progress_reporter=pipeline.update_progress,
+        telegram=telegram,
+        stats=stats,
+        max_concurrent_downloads=settings.max_concurrent_downloads,
+        max_queue_size=settings.max_queue_size,
+        max_tasks_per_user=settings.max_tasks_per_user,
+        progress_update_seconds=settings.progress_update_seconds,
+    )
+    selections = SelectionStore(settings.selection_ttl_seconds)
+    info_service = VideoInfoService(
+        settings.cookies_file,
+        settings.max_playlist_items,
+        max_concurrent_requests=max(2, settings.max_concurrent_downloads * 2),
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
-    router = Router()
+    dispatcher.include_router(build_admin_router(settings, stats))
+    dispatcher.include_router(build_command_router(manager, stats))
+    dispatcher.include_router(
+        build_download_router(
+            manager=manager,
+            info_service=info_service,
+            selections=selections,
+            settings=settings,
+        )
+    )
 
     try:
-        await ensure_bot_api_available(bot, settings)
+        try:
+            await bot.get_me()
+        except TelegramNetworkError as exc:
+            if settings.bot_api_base_url:
+                raise RuntimeError(
+                    f"Telegram Bot API недоступен: {settings.bot_api_base_url}. "
+                    "Запустите локальный API или уберите BOT_API_BASE_URL."
+                ) from exc
+            raise
 
-        sync_bot = TelegramBotWrapper(
-            AiogramSyncBotAdapter(
-                bot=bot,
-                loop=asyncio.get_running_loop(),
-                cloud_upload_bot=cloud_upload_bot,
-            )
+        if not shutil.which("ffmpeg"):
+            logger.warning("FFmpeg not found; audio, GIF and stream merging may fail")
+        await manager.start()
+        await setup_commands(bot, settings.admin_ids)
+        logger.info(
+            "ReSave started: workers=%s local_bot_api=%s upload_limit=%s MB",
+            settings.max_concurrent_downloads,
+            settings.bot_api_is_local,
+            settings.effective_upload_limit // (1024 * 1024),
         )
-
-        logger.info("Проверка FFmpeg...")
-        if not ensure_ffmpeg(auto_download=False):
-            warning_text = (
-                "FFmpeg не найден на сервере. "
-                "Функции конвертации (GIF/аудио) могут быть недоступны."
-            )
-            logger.warning(warning_text)
-            await notify_admins_async(bot, f"⚠️ [ReSave] {warning_text}")
-
-        download_manager.set_bot(sync_bot)
-        set_download_manager(download_manager)
-
-        logger.info("Регистрация aiogram-хендлеров...")
-        register_download_handlers(router, sync_bot)
-        register_command_handlers(router)
-        register_admin_handlers(router)
-        dispatcher.include_router(router)
-
-        await setup_bot_commands(bot, BotCommand, BotCommandScopeChat)
-
-        logger.info("=" * 50)
-        logger.info("ReSave запущен")
-        logger.info("Групповой режим активирован")
-        logger.info("=" * 50)
-
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),
         )
     finally:
-        if cloud_upload_bot:
-            await cloud_upload_bot.session.close()
+        await manager.stop()
+        stats.close()
+        set_stats_manager(None)
+        if cloud_bot:
+            await cloud_bot.session.close()
         await bot.session.close()
 
 
-def main():
-    instance_lock = acquire_instance_lock()
-    if instance_lock is None:
-        logger.warning("ReSave уже запущен; повторный экземпляр завершен")
+def main() -> None:
+    lock = acquire_instance_lock()
+    if lock is None:
+        print("ReSave уже запущен", file=sys.stderr)
         return
-
     try:
         asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
     except RuntimeError as exc:
         logger.error("%s", exc)
-        raise SystemExit(1)
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Завершение работы ReSave...")
+        raise SystemExit(1) from exc
     finally:
-        instance_lock.close()
+        lock.close()
 
 
 if __name__ == "__main__":

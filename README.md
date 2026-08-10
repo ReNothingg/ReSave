@@ -1,223 +1,162 @@
 # ReSave
 
-<div align="center">
-  <img src="logo.png" alt="ReSave logo" width="180" />
+Асинхронный Telegram-бот для скачивания видео, аудио и связанных медиа через `yt-dlp`.
 
-  <h3>Telegram-бот для скачивания видео и медиаконтента</h3>
+## Возможности
 
-  <p>
-    <a href="https://t.me/ReSafeBot"><b>Открыть бота: @ReSafeBot</b></a>
-  </p>
+- видео с выбором доступного разрешения;
+- MP3, GIF до 30 секунд, субтитры и превью;
+- TikTok photo posts через `gallery-dl`;
+- автоматическая загрузка ссылок в группах (до 720p);
+- ограниченная очередь, несколько воркеров, прогресс и отмена;
+- плейлисты с настраиваемым лимитом элементов;
+- локальный Telegram Bot API для файлов до 2 GB;
+- SQLite-статистика и административная рассылка;
+- автоматический fallback с видео/аудио на документ, если Telegram отвергает формат.
 
-  <p>
-    <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+" />
-    <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?logo=telegram&logoColor=white" alt="Telegram Bot" />
-    <img src="https://img.shields.io/badge/Powered%20by-yt--dlp-ff4e45" alt="yt-dlp" />
-  </p>
-</div>
+## Архитектура
 
-## Что умеет бот
-
-- Скачивает видео по ссылке с популярных платформ через `yt-dlp`.
-- Поддерживает работу в группах.
-- Грузит видео в фоне и отправляет результат по готовности.
-- Показывает все доступные разрешения YouTube, включая 1080p, 1440p, 4K и 8K.
-- Автоматически скачивает и объединяет лучшие video+audio потоки через FFmpeg.
-- Использует общую очередь без платных статусов и пользовательских лимитов.
-- Хранит статистику в SQLite и автоматически мигрирует старый `user_stats.json`.
-- Поддерживает админ-команды и базовую статистику.
-
-## Быстрый старт
-
-### Установка зависимостей
-
-```bash
-pip install -r requirements.txt
+```text
+aiogram routers
+    │
+    ├── VideoInfoService ── yt-dlp metadata
+    │
+    └── DownloadManager ── bounded asyncio.Queue
+            │
+            └── MediaPipeline
+                  ├── MediaDownloader ── yt-dlp in worker threads
+                  ├── ffmpeg / ffprobe
+                  ├── TelegramGateway ── retries + local/cloud Bot API
+                  └── UserStatsManager ── SQLite (WAL)
 ```
 
-### Настройка `.env`
+Хендлеры отвечают только за Telegram-сценарии. Очередь, загрузка, конвертация, отправка и хранение статистики разделены. Блокирующие операции `yt-dlp` и `gallery-dl` не выполняются в event loop.
 
-Скопируйте `.env.example` в `.env` и заполните нужные значения:
+## Требования
+
+- Python 3.11+;
+- FFmpeg и ffprobe в `PATH`;
+- для TikTok photo posts — установленный из `requirements.txt` `gallery-dl`;
+- локальный `telegram-bot-api` — только если нужны файлы больше облачного лимита.
+
+## Установка
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Минимальная конфигурация:
 
 ```env
-BOT_TOKEN=ваш_токен_бота
+BOT_TOKEN=123456:telegram-bot-token
 ADMIN_IDS=123456789
 ```
 
-Для отправки файлов больше стандартного лимита Bot API поднимите локальный
-`telegram-bot-api` и укажите его адрес. `TELEGRAM_API_ID` и
-`TELEGRAM_API_HASH` создаются на https://my.telegram.org/apps.
+Запуск:
+
+```bash
+.venv/bin/python main.py
+```
+
+В проекте используется lock-файл: второй экземпляр бота в той же директории не запустится.
+
+## Конфигурация
+
+| Переменная | Значение по умолчанию | Назначение |
+|---|---:|---|
+| `BOT_TOKEN` | — | обязательный токен бота |
+| `ADMIN_IDS` | — | Telegram ID администраторов через запятую |
+| `TEMP_DIR` | `temp_downloads` | рабочие директории загрузок |
+| `STATS_DB_PATH` | `database.db` | SQLite-база статистики |
+| `COOKIES_FILE` | `cookies.txt` | cookies для закрытых/ограниченных источников |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | число воркеров очереди |
+| `MAX_QUEUE_SIZE` | `100` | общий предел очереди |
+| `MAX_TASKS_PER_USER` | `10` | предел активных задач пользователя |
+| `MAX_PLAYLIST_ITEMS` | `25` | верхний предел плейлиста; дополнительно действует лимит задач пользователя |
+| `MAX_FILE_SIZE` | лимит Bot API | технический предел скачиваемого файла |
+| `SEND_AS_DOC_LIMIT` | лимит Bot API | после этого размера отправлять как документ |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | общий дедлайн загрузки по progress hook |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | `180` | допустимое время без прогресса |
+| `DOWNLOAD_RATE_LIMIT_BYTES` | `0` | ограничение скорости `yt-dlp`; `0` — без ограничения |
+| `PROGRESS_UPDATE_SECONDS` | `3` | частота обновления статуса |
+| `BOT_API_BASE_URL` | — | адрес локального Bot API |
+| `BOT_API_IS_LOCAL` | `true` при заданном URL | включить локальный режим и лимит Bot API до 2 GB |
+| `BOT_API_USE_FILE_URI` | `false` | передавать путь вместо multipart; только для общей файловой системы |
+| `LOG_LEVEL` | `INFO` | уровень логов |
+| `LOG_FILE` | `bot.log` | файл логов |
+
+Относительные пути вычисляются от корня проекта, поэтому запуск из другой рабочей директории безопасен.
+
+## Локальный Telegram Bot API
+
+Для файлов больше облачного лимита:
 
 ```env
 BOT_API_BASE_URL=http://127.0.0.1:8081
 BOT_API_IS_LOCAL=true
+BOT_API_USE_FILE_URI=false
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your-api-hash
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
-TELEGRAM_API_ID=ваш_api_id
-TELEGRAM_API_HASH=ваш_api_hash
 ```
 
-Запуск локального Bot API через Docker:
+Запуск через Docker:
 
 ```bash
 docker compose up -d telegram-bot-api
-docker compose logs -f telegram-bot-api
+.venv/bin/python main.py
 ```
 
-После этого запускайте бота обычной командой:
+При транспортной ошибке локального API файлы до 50 MB автоматически повторно отправляются через облачный Bot API.
 
-```bash
-python main.py
-```
+Для Docker оставьте `BOT_API_USE_FILE_URI=false`: контейнер Bot API не видит абсолютные пути хоста, поэтому бот передаёт файл multipart-запросом. Значение `true` подходит только нативному Bot API на том же сервере и с общей файловой системой; alwaysdata wrapper включает его автоматически.
 
-### Запуск без локального Bot API на alwaysdata
-
-Docker не обязателен для работы бота. Но для отправки файлов больше облачного
-лимита Telegram нужен локальный `telegram-bot-api`. Если на сервере нет
-локального `telegram-bot-api`, оставьте `BOT_API_BASE_URL` пустым или удалите
-эту переменную из `.env`.
-
-Минимальный `.env` для Python-only запуска:
-
-```env
-BOT_TOKEN=ваш_токен_бота
-ADMIN_IDS=123456789
-MAX_FILE_SIZE=52428800
-SEND_AS_DOC_LIMIT=52428800
-```
-
-Команда для вкладки Service на alwaysdata:
-
-```bash
-bash -c 'export PATH=$HOME/.local/bin:$HOME/ffmpeg/ffmpeg-7.0.2-amd64-static:$PATH && cd /home/renothing/ReSave && python main.py'
-```
-
-В таком режиме бот работает через облачный Telegram Bot API. Это полностью
-Python-запуск, но отправка файлов ограничена примерно 50 MB. Собственный
-FastAPI/Flask API можно добавить для внешних запросов к вашему сервису, но он
-не заменит локальный `telegram-bot-api` и не снимет лимит Telegram на загрузку
-больших файлов.
-
-### Локальный Bot API без Docker на alwaysdata
-
-Чтобы отправлять файлы до 2000 MB без Docker, установите бинарник
-`telegram-bot-api` в домашнюю директорию, например в
-`$HOME/.local/bin/telegram-bot-api`, и запускайте его вместе с ботом одним
-Service-процессом.
-
-Собрать Linux-бинарник на Mac можно через Docker:
+Для alwaysdata без Docker можно собрать бинарник и использовать сервисный wrapper:
 
 ```bash
 bash scripts/build_telegram_bot_api_linux_amd64.sh
+bash scripts/run_alwaysdata_local_bot_api.sh
 ```
 
-Готовый файл появится здесь:
+Путь к проекту, Python и бинарнику задаются переменными `APP_DIR`, `PYTHON_BIN` и `BOT_API_BIN`.
+
+## Проверки
 
 ```bash
-dist/telegram-bot-api-linux-amd64
+pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
+pytest -q
 ```
 
-Загрузите его на сервер:
+Тесты не обращаются к Telegram или внешним видеосервисам: сетевые клиенты и `yt-dlp` заменяются тестовыми объектами.
+
+## Команды бота
+
+- `/start`, `/help` — справка;
+- `/status` — активные задачи пользователя;
+- `/cancel` — отмена своих задач в текущем чате;
+- `/stats` — личная статистика;
+- `/admin`, `/broadcast`, `/stats_global` — функции администратора.
+
+## Безопасность и эксплуатация
+
+- принимаются только HTTP(S)-ссылки без credentials;
+- loopback, локальные IP и hostnames, которые DNS разрешает во внутреннюю сеть, отклоняются до `yt-dlp`;
+- callback выбора формата привязан одновременно к пользователю и чату и истекает по TTL;
+- HTML из заголовков и URL экранируется;
+- очередь и число задач пользователя ограничены;
+- временные файлы изолированы по UUID задачи и удаляются после завершения;
+- cookies, `.env`, база, логи и временные файлы исключены из Git.
+
+## Обновление yt-dlp
+
+Видеосервисы регулярно меняют протоколы. Если источник внезапно перестал работать, сначала обновите зависимости:
 
 ```bash
-scp dist/telegram-bot-api-linux-amd64 renothing@ssh-renothing.alwaysdata.net:/home/renothing/.local/bin/telegram-bot-api
-ssh renothing@ssh-renothing.alwaysdata.net 'chmod +x /home/renothing/.local/bin/telegram-bot-api'
+pip install -U yt-dlp gallery-dl
 ```
-
-В `.env` нужны:
-
-```env
-BOT_TOKEN=ваш_токен_бота
-ADMIN_IDS=123456789
-TELEGRAM_API_ID=ваш_api_id
-TELEGRAM_API_HASH=ваш_api_hash
-MAX_FILE_SIZE=2097152000
-SEND_AS_DOC_LIMIT=2097152000
-MAX_CONCURRENT_DOWNLOADS=1
-```
-
-Команда для вкладки Service:
-
-```bash
-bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh
-```
-
-По умолчанию скрипт ожидает бинарник здесь:
-
-```bash
-/home/renothing/.local/bin/telegram-bot-api
-```
-
-Если путь другой, задайте его перед запуском:
-
-```bash
-bash -c 'export BOT_API_BIN=$HOME/telegram-bot-api/bin/telegram-bot-api && bash /home/renothing/ReSave/scripts/run_alwaysdata_local_bot_api.sh'
-```
-
-Скрипт поднимает Bot API на `127.0.0.1:8081`, поэтому он доступен только боту внутри этого же Service-процесса. Это безопаснее, чем открывать порт сервиса наружу.
-
-### Cookies для `yt-dlp` (опционально)
-
-Если нужны авторизованные источники, добавьте cookies в `cookies.txt`.
-
-### Запуск
-
-```bash
-python main.py
-```
-
-## Конфигурация
-
-Основные параметры находятся в `config.py`:
-
-| Параметр | Назначение |
-|---|---|
-| `BOT_TOKEN` | Токен Telegram-бота (читается из `.env`) |
-| `ADMIN_IDS` | ID администраторов |
-| `TEMP_DIR` | Временная директория для загрузок |
-| `STATS_DB_PATH` | SQLite-файл со статистикой |
-| `MAX_CONCURRENT_DOWNLOADS` | Число одновременно работающих загрузчиков; остальные задачи ждут в общей очереди |
-| `MAX_FILE_SIZE`, `SEND_AS_DOC_LIMIT` | Технический предел Telegram Bot API и порог отправки как документа |
-| `BOT_API_BASE_URL`, `BOT_API_IS_LOCAL` | Адрес локального Bot API для отправки файлов до 2000 MB |
-| `DOWNLOAD_RATE_LIMIT_BYTES` | Техническое ограничение скорости загрузчика для защиты Service от SIGKILL; `4194304` по умолчанию |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Перезапуск формата, если загрузчик не показывает прогресс; `300` секунд по умолчанию |
-| `LOG_LEVEL` | Уровень логирования (`INFO`, `DEBUG`, ...) |
-
-## Структура проекта
-
-- `main.py` - точка входа.
-- `src/` - основная логика приложения.
-- `tests/` - автоматические тесты.
-- `temp_downloads/` - временные загруженные файлы.
-- `cookies.txt` - cookies для `yt-dlp`.
-- `database.db` - SQLite-база со статистикой.
-- `bot.log` - локальные логи.
-
-## Проверка проекта
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-В репозитории также настроен GitHub Actions workflow `CI`, который компилирует исходники и запускает тесты на каждый push и pull request.
-
-## Запуск как systemd-сервис (Linux)
-
-```bash
-sudo systemctl start resave
-sudo systemctl status resave
-```
-
-Полезные команды:
-
-```bash
-sudo systemctl restart resave
-journalctl -u resave -f
-sudo systemctl enable resave
-```
-
-## Примечания
-
-- Если `ffmpeg` не установлен, часть медиавозможностей может быть недоступна.
-- Бот больше не устанавливает зависимости на лету: перед запуском нужно явно выполнить `pip install -r requirements.txt`.
-- Обычные плейлисты ставятся в очередь автоматически в среднем качестве, если пользователь укладывается в лимиты.

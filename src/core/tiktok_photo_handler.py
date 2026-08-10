@@ -1,28 +1,27 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
+import sys
 from pathlib import Path
-
+from urllib.parse import urlsplit
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def is_tiktok_photo_url(url: str) -> bool:
-    lowered = url.lower()
-    return "tiktok.com" in lowered and "/photo/" in lowered
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    return (host == "tiktok.com" or host.endswith(".tiktok.com")) and "/photo/" in parsed.path
 
 
 def download_tiktok_photos(url: str, output_dir: str | Path) -> list[Path]:
-    executable = shutil.which("gallery-dl")
-    if not executable:
-        raise RuntimeError("gallery-dl не установлен на сервере")
-
     destination = Path(output_dir).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         [
-            executable,
+            sys.executable,
+            "-m",
+            "gallery_dl",
             "--no-mtime",
             "-D",
             str(destination),

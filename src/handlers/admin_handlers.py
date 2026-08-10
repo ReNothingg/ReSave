@@ -1,30 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
 from aiogram import Bot, Router
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-import config
-from ..core.user_stats import get_stats_manager
-from ..utils.ui_manager import get_ui_manager
+from config import Settings
+
+from ..core.user_stats import UserStats, UserStatsManager
+from ..utils.presentation import panel
 
 logger = logging.getLogger(__name__)
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in config.ADMIN_IDS
 
 
 class BroadcastStates(StatesGroup):
     waiting_for_message = State()
 
 
-@dataclass
+@dataclass(slots=True)
 class BroadcastPayload:
     kind: str
     text: str | None = None
@@ -34,548 +33,265 @@ class BroadcastPayload:
     caption_entities: list | None = None
 
 
-def _build_admin_keyboard() -> InlineKeyboardMarkup:
+def _admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="📊 Глобальная статистика",
-                    callback_data="admin_stats_global",
-                ),
-                InlineKeyboardButton(
-                    text="📣 Рассылка",
-                    callback_data="admin_broadcast",
-                ),
+                InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
+                InlineKeyboardButton(text="📣 Рассылка", callback_data="admin:broadcast"),
             ],
             [
-                InlineKeyboardButton(
-                    text="👥 Список пользователей",
-                    callback_data="admin_user_list",
-                ),
-                InlineKeyboardButton(
-                    text="🧹 Очистить БД",
-                    callback_data="admin_clear_db",
-                ),
+                InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"),
+                InlineKeyboardButton(text="🧹 Очистить БД", callback_data="admin:clear"),
             ],
         ]
     )
 
 
-def _build_back_keyboard() -> InlineKeyboardMarkup:
+def _back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:back")]]
+    )
+
+
+def _confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
-        ]
-    )
-
-
-def _build_broadcast_waiting_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отменить", callback_data="broadcast_cancel")]
-        ]
-    )
-
-
-def _build_admin_panel_text():
-    ui_manager = get_ui_manager()
-    stats_manager = get_stats_manager()
-    all_stats = stats_manager.get_all_stats()
-
-    total_downloads = sum(item.downloads_count for item in all_stats.values())
-    total_videos = sum(item.total_videos for item in all_stats.values())
-    total_audios = sum(item.total_audios for item in all_stats.values())
-    total_other = sum(item.total_other_downloads for item in all_stats.values())
-    total_failed = sum(item.failed_downloads for item in all_stats.values())
-    total_size = sum(item.total_size_mb for item in all_stats.values())
-
-    return ui_manager.format_panel(
-        "Панель администратора",
-        ui_manager.format_key_value_list(
             [
-                ("Активных пользователей", str(len(all_stats))),
-                ("Всего загрузок", str(total_downloads)),
-                ("Видео загружено", str(total_videos)),
-                ("Аудио загружено", str(total_audios)),
-                ("Прочие файлы", str(total_other)),
-                ("Ошибок", str(total_failed)),
-                ("Общий размер", f"{total_size:.1f} MB"),
+                InlineKeyboardButton(text="✅ Подтвердить", callback_data="broadcast:confirm"),
+                InlineKeyboardButton(text="❌ Отменить", callback_data="broadcast:cancel"),
             ]
-        ),
-        icon="🛠️",
-        footer="Выберите действие ниже.",
-    )
-
-
-def _build_global_stats_text():
-    ui_manager = get_ui_manager()
-    stats_manager = get_stats_manager()
-    all_stats = stats_manager.get_all_stats()
-
-    total_users = len(all_stats)
-    total_downloads = sum(item.downloads_count for item in all_stats.values())
-    total_videos = sum(item.total_videos for item in all_stats.values())
-    total_audios = sum(item.total_audios for item in all_stats.values())
-    total_other = sum(item.total_other_downloads for item in all_stats.values())
-    total_failed = sum(item.failed_downloads for item in all_stats.values())
-    total_size = sum(item.total_size_mb for item in all_stats.values())
-
-    avg_downloads = total_downloads / total_users if total_users else 0
-    avg_size = total_size / total_downloads if total_downloads else 0
-    active_users = sum(1 for item in all_stats.values() if item.downloads_count > 0)
-    attempts = total_downloads + total_failed
-    success_rate = (total_downloads / attempts * 100) if attempts else 0
-
-    lines = ui_manager.format_key_value_list(
-        [
-            ("Пользователей", str(total_users)),
-            ("Активных пользователей", str(active_users)),
-            ("Всего загрузок", str(total_downloads)),
-            ("Видео", str(total_videos)),
-            ("Аудио", str(total_audios)),
-            ("Прочее", str(total_other)),
-            ("Ошибок", str(total_failed)),
-            ("Успешность", f"{success_rate:.1f}%"),
-            ("Общий размер", f"{total_size:.1f} MB"),
-            ("Средний размер файла", f"{avg_size:.2f} MB"),
-            ("Среднее число загрузок на пользователя", f"{avg_downloads:.1f}"),
         ]
     )
-    lines.extend(["", "Топ-5 пользователей:"])
-
-    top_users = sorted(
-        all_stats.items(),
-        key=lambda item: item[1].downloads_count,
-        reverse=True,
-    )[:5]
-
-    if not top_users:
-        lines.append("Пока нет пользователей в статистике.")
-    else:
-        for index, (user_id, stats) in enumerate(top_users, start=1):
-            lines.append(f"{index}. ID {user_id}: {stats.downloads_count} загрузок")
-
-    return ui_manager.format_panel("Глобальная статистика", lines, icon="📊")
 
 
-def _build_user_list_text():
-    ui_manager = get_ui_manager()
-    stats_manager = get_stats_manager()
-    all_stats = stats_manager.get_all_stats()
-    user_list = sorted(
-        all_stats.items(),
-        key=lambda item: item[1].downloads_count,
-        reverse=True,
-    )
-
-    lines = []
-
-    if not user_list:
-        lines.append("База пользователей пуста.")
-        return ui_manager.format_panel("Список пользователей", lines, icon="👥")
-
-    for user_id, stats in user_list[:20]:
-        lines.extend(
-            [
-                f"ID: {user_id}",
-                f"├ Загрузок: {stats.downloads_count}",
-                f"├ Видео: {stats.total_videos} | Аудио: {stats.total_audios} | Прочее: {stats.total_other_downloads}",
-                f"└ Размер: {stats.total_size_mb:.1f} MB",
-                "",
-            ]
-        )
-
-    if len(user_list) > 20:
-        lines.append(f"... и еще {len(user_list) - 20} пользователей")
-
-    return ui_manager.format_panel("Список пользователей", lines, icon="👥")
+def _stats_lines(items: dict[int, UserStats]) -> list[str]:
+    downloads = sum(item.downloads_count for item in items.values())
+    failed = sum(item.failed_downloads for item in items.values())
+    attempts = downloads + failed
+    return [
+        f"Пользователей: {len(items)}",
+        f"Загрузок: {downloads}",
+        f"Видео: {sum(item.total_videos for item in items.values())}",
+        f"Аудио: {sum(item.total_audios for item in items.values())}",
+        f"Прочее: {sum(item.total_other_downloads for item in items.values())}",
+        f"Ошибок: {failed}",
+        f"Успешность: {downloads / attempts * 100 if attempts else 0:.1f}%",
+        f"Объём: {sum(item.total_size_mb for item in items.values()):.1f} MB",
+    ]
 
 
-def _extract_broadcast_payload(message: Message) -> BroadcastPayload | None:
+def _payload(message: Message) -> BroadcastPayload | None:
     if message.text:
+        return BroadcastPayload("text", text=message.text, entities=list(message.entities or []))
+    for kind in ("photo", "video", "document", "audio"):
+        value = getattr(message, kind, None)
+        if not value:
+            continue
+        file_id = value[-1].file_id if kind == "photo" else value.file_id
         return BroadcastPayload(
-            kind="text",
-            text=message.text,
-            entities=list(message.entities or []),
-        )
-
-    if message.photo:
-        return BroadcastPayload(
-            kind="photo",
-            file_id=message.photo[-1].file_id,
+            kind,
+            file_id=file_id,
             caption=message.caption,
             caption_entities=list(message.caption_entities or []),
         )
-
-    if message.video:
-        return BroadcastPayload(
-            kind="video",
-            file_id=message.video.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-        )
-
-    if message.document:
-        return BroadcastPayload(
-            kind="document",
-            file_id=message.document.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-        )
-
-    if message.audio:
-        return BroadcastPayload(
-            kind="audio",
-            file_id=message.audio.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-        )
-
     return None
 
 
-async def _send_broadcast_payload(bot: Bot, user_id: int, payload: BroadcastPayload):
+async def _send_payload(bot: Bot, user_id: int, payload: BroadcastPayload) -> None:
     if payload.kind == "text":
         await bot.send_message(user_id, payload.text or "", entities=payload.entities)
         return
-
-    if payload.kind == "photo":
-        await bot.send_photo(
-            user_id,
-            payload.file_id,
-            caption=payload.caption,
-            caption_entities=payload.caption_entities,
-        )
-        return
-
-    if payload.kind == "video":
-        await bot.send_video(
-            user_id,
-            payload.file_id,
-            caption=payload.caption,
-            caption_entities=payload.caption_entities,
-        )
-        return
-
-    if payload.kind == "document":
-        await bot.send_document(
-            user_id,
-            payload.file_id,
-            caption=payload.caption,
-            caption_entities=payload.caption_entities,
-        )
-        return
-
-    if payload.kind == "audio":
-        await bot.send_audio(
-            user_id,
-            payload.file_id,
-            caption=payload.caption,
-            caption_entities=payload.caption_entities,
-        )
-        return
-
-    raise ValueError(f"Unsupported broadcast payload kind: {payload.kind}")
+    method = getattr(bot, f"send_{payload.kind}")
+    await method(
+        chat_id=user_id,
+        **{payload.kind: payload.file_id},
+        caption=payload.caption,
+        caption_entities=payload.caption_entities,
+    )
 
 
-def register_admin_handlers(router: Router):
-    ui_manager = get_ui_manager()
-    broadcast_cache: dict[int, dict] = {}
+def build_admin_router(settings: Settings, stats: UserStatsManager) -> Router:
+    router = Router(name="admin")
+    pending: dict[int, BroadcastPayload] = {}
 
-    async def admin_command(message: Message, state: FSMContext):
-        if not message.from_user or not is_admin(message.from_user.id):
+    def allowed(user_id: int | None) -> bool:
+        return bool(user_id is not None and user_id in settings.admin_ids)
+
+    async def all_stats() -> dict[int, UserStats]:
+        return await asyncio.to_thread(stats.get_all_stats)
+
+    async def panel_text() -> str:
+        return panel("Панель администратора", _stats_lines(await all_stats()), icon="🛠️")
+
+    async def admin(message: Message, state: FSMContext) -> None:
+        if not message.from_user or not allowed(message.from_user.id):
             return
-
         await state.clear()
-        await message.reply(_build_admin_panel_text(), reply_markup=_build_admin_keyboard())
+        await message.reply(await panel_text(), parse_mode="HTML", reply_markup=_admin_keyboard())
 
-    async def broadcast_command(message: Message, state: FSMContext):
-        if not message.from_user or not is_admin(message.from_user.id):
+    async def stats_command(message: Message) -> None:
+        if not message.from_user or not allowed(message.from_user.id):
             return
+        await message.reply(
+            panel("Глобальная статистика", _stats_lines(await all_stats()), icon="📊"),
+            parse_mode="HTML",
+        )
 
+    async def begin_broadcast(message: Message, state: FSMContext) -> None:
+        if not message.from_user or not allowed(message.from_user.id):
+            return
         await state.set_state(BroadcastStates.waiting_for_message)
         await message.reply(
-            ui_manager.format_panel(
+            panel(
                 "Рассылка",
-                ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
+                [
+                    "Отправьте текст, фото, видео, документ или аудио.",
+                    "Следующим шагом будет подтверждение.",
+                ],
                 icon="📣",
             ),
-            reply_markup=_build_broadcast_waiting_keyboard(),
+            parse_mode="HTML",
         )
 
-    async def process_broadcast_message(message: Message, state: FSMContext):
-        if not message.from_user or not is_admin(message.from_user.id):
+    async def receive_broadcast(message: Message, state: FSMContext) -> None:
+        if not message.from_user or not allowed(message.from_user.id):
             return
-
-        payload = _extract_broadcast_payload(message)
-        if payload is None:
-            await message.reply(
-                ui_manager.format_panel(
-                    "Тип не поддерживается",
-                    ["Отправьте текст, фото, видео, документ или аудио."],
-                    icon="⚠️",
-                )
-            )
+        value = _payload(message)
+        if value is None:
+            await message.reply(panel("Формат не поддерживается", icon="⚠️"), parse_mode="HTML")
             return
+        pending[message.from_user.id] = value
+        await state.clear()
+        recipients = len(await all_stats())
+        await message.reply(
+            panel("Подтвердите рассылку", [f"Получателей: {recipients}"], icon="📣"),
+            parse_mode="HTML",
+            reply_markup=_confirm_keyboard(),
+        )
 
-        stats_manager = get_stats_manager()
-        all_stats = stats_manager.get_all_stats()
-        user_ids = list(all_stats.keys())
-
-        if not user_ids:
+    async def admin_callback(call: CallbackQuery, state: FSMContext) -> None:
+        if not call.from_user or not allowed(call.from_user.id) or not call.message:
+            return
+        action = (call.data or "").partition(":")[2]
+        await call.answer()
+        if action == "back":
             await state.clear()
-            await message.reply(
-                ui_manager.format_panel(
-                    "Рассылка недоступна",
-                    ["Нет пользователей для рассылки."],
-                    icon="📣",
-                )
+            await call.message.edit_text(
+                await panel_text(), parse_mode="HTML", reply_markup=_admin_keyboard()
             )
-            return
-
-        broadcast_cache[message.from_user.id] = {
-            "payload": payload,
-            "user_ids": user_ids,
-            "total": len(user_ids),
-        }
-
-        await state.clear()
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✅ Да, отправить",
-                        callback_data="broadcast_confirm",
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Отменить",
-                        callback_data="broadcast_cancel",
-                    ),
-                ]
-            ]
-        )
-
-        await message.reply(
-            ui_manager.format_panel(
-                "Подтверждение рассылки",
-                [
-                    f"Получателей: {len(user_ids)}",
-                    "",
-                    "Продолжить?",
-                ],
-                icon="📣",
-            ),
-            reply_markup=keyboard,
-        )
-
-    async def stats_global_command(message: Message):
-        if not message.from_user or not is_admin(message.from_user.id):
-            return
-
-        await message.reply(_build_global_stats_text())
-
-    async def callback_admin_stats_global(call: CallbackQuery):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await call.answer()
-        await call.message.edit_text(
-            _build_global_stats_text(),
-            reply_markup=_build_back_keyboard(),
-        )
-
-    async def callback_admin_broadcast(call: CallbackQuery, state: FSMContext):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await state.set_state(BroadcastStates.waiting_for_message)
-        await call.answer()
-        await call.message.edit_text(
-            ui_manager.format_panel(
-                "Рассылка",
-                ["Отправьте сообщение, фото, видео, документ или аудио для рассылки."],
-                icon="📣",
-            ),
-            reply_markup=_build_broadcast_waiting_keyboard(),
-        )
-
-    async def callback_admin_user_list(call: CallbackQuery):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await call.answer()
-        await call.message.edit_text(
-            _build_user_list_text(),
-            reply_markup=_build_back_keyboard(),
-        )
-
-    async def callback_admin_clear_db(call: CallbackQuery):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await call.answer()
-        await call.message.edit_text(
-            ui_manager.format_panel(
-                "Очистка статистики",
-                [
-                    "Вы уверены, что хотите очистить всю статистику?",
-                    "Это действие необратимо.",
-                ],
-                icon="⚠️",
-            ),
-            reply_markup=InlineKeyboardMarkup(
+        elif action == "stats":
+            await call.message.edit_text(
+                panel("Глобальная статистика", _stats_lines(await all_stats()), icon="📊"),
+                parse_mode="HTML",
+                reply_markup=_back_keyboard(),
+            )
+        elif action == "users":
+            items = list((await all_stats()).items())[:20]
+            lines = [
+                f"{user_id}: {value.downloads_count} загрузок · {value.total_size_mb:.1f} MB"
+                for user_id, value in items
+            ] or ["Пользователей пока нет."]
+            await call.message.edit_text(
+                panel("Пользователи", lines, icon="👥"),
+                parse_mode="HTML",
+                reply_markup=_back_keyboard(),
+            )
+        elif action == "broadcast":
+            await state.set_state(BroadcastStates.waiting_for_message)
+            await call.message.edit_text(
+                panel("Рассылка", ["Отправьте сообщение для рассылки."], icon="📣"),
+                parse_mode="HTML",
+                reply_markup=_back_keyboard(),
+            )
+        elif action == "clear":
+            keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✅ Да, очистить",
-                            callback_data="admin_clear_confirm",
+                            text="✅ Очистить", callback_data="admin:clear-confirm"
                         ),
-                        InlineKeyboardButton(
-                            text="❌ Отменить",
-                            callback_data="admin_back",
-                        ),
+                        InlineKeyboardButton(text="❌ Отмена", callback_data="admin:back"),
                     ]
                 ]
-            ),
-        )
-
-    async def callback_admin_clear_confirm(call: CallbackQuery):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        stats_manager = get_stats_manager()
-        stats_manager.clear_all_stats()
-
-        await call.answer("Статистика очищена.")
-        await call.message.edit_text(
-            ui_manager.format_panel(
-                "Статистика очищена",
-                ["База статистики успешно очищена."],
-                icon="✅",
-            ),
-            reply_markup=_build_back_keyboard(),
-        )
-
-    async def callback_broadcast_confirm(call: CallbackQuery, bot: Bot):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        data = broadcast_cache.get(call.from_user.id)
-        if not data:
-            await call.answer("Данные рассылки не найдены.", show_alert=True)
-            return
-
-        await call.answer()
-
-        payload: BroadcastPayload = data["payload"]
-        user_ids: list[int] = data["user_ids"]
-        total_users: int = data["total"]
-
-        await call.message.edit_text(
-            ui_manager.format_panel(
-                "Рассылка начата",
-                [f"Отправлено: 0/{total_users}", "Ошибок: 0"],
-                icon="📣",
             )
-        )
+            await call.message.edit_text(
+                panel("Очистить статистику?", ["Действие нельзя отменить."], icon="⚠️"),
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        elif action == "clear-confirm":
+            await asyncio.to_thread(stats.clear_all_stats)
+            await call.message.edit_text(
+                panel("Статистика очищена", icon="✅"),
+                parse_mode="HTML",
+                reply_markup=_back_keyboard(),
+            )
 
-        sent = 0
-        failed = 0
+    async def broadcast_callback(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+        if not call.from_user or not allowed(call.from_user.id) or not call.message:
+            return
+        action = (call.data or "").partition(":")[2]
+        if action == "cancel":
+            pending.pop(call.from_user.id, None)
+            await state.clear()
+            await call.answer("Отменено")
+            await call.message.edit_text(
+                panel("Рассылка отменена", icon="✕"),
+                parse_mode="HTML",
+                reply_markup=_back_keyboard(),
+            )
+            return
 
+        payload = pending.get(call.from_user.id)
+        if payload is None:
+            await call.answer("Данные рассылки устарели", show_alert=True)
+            return
+        await call.answer()
+        user_ids = list((await all_stats()).keys())
+        sent = failed = 0
         for index, user_id in enumerate(user_ids, start=1):
             try:
-                await _send_broadcast_payload(bot, user_id, payload)
+                await _send_payload(bot, user_id, payload)
                 sent += 1
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after) + 0.25)
+                try:
+                    await _send_payload(bot, user_id, payload)
+                    sent += 1
+                except Exception:
+                    failed += 1
             except Exception as exc:
                 failed += 1
-                logger.error("Ошибка отправки пользователю %s: %s", user_id, exc)
-
-            if index % 10 == 0 or index == total_users:
+                logger.info("Broadcast to %s failed: %s", user_id, exc)
+            await asyncio.sleep(0.05)
+            if index % 20 == 0:
                 try:
                     await call.message.edit_text(
-                        ui_manager.format_panel(
-                            "Рассылка в процессе",
-                            [
-                                f"Отправлено: {sent}/{total_users}",
-                                f"Ошибок: {failed}",
-                            ],
+                        panel(
+                            "Рассылка",
+                            [f"Отправлено: {sent}/{len(user_ids)}", f"Ошибок: {failed}"],
                             icon="📣",
-                        )
+                        ),
+                        parse_mode="HTML",
                     )
                 except Exception:
-                    logger.debug("Не удалось обновить прогресс рассылки")
-
-        broadcast_cache.pop(call.from_user.id, None)
-
+                    pass
+        pending.pop(call.from_user.id, None)
         await call.message.edit_text(
-            ui_manager.format_panel(
-                "Рассылка завершена",
-                [
-                    f"Успешно отправлено: {sent}/{total_users}",
-                    f"Ошибок: {failed}",
-                ],
-                icon="✅",
-            ),
-            reply_markup=_build_back_keyboard(),
+            panel("Рассылка завершена", [f"Отправлено: {sent}", f"Ошибок: {failed}"], icon="✅"),
+            parse_mode="HTML",
+            reply_markup=_back_keyboard(),
         )
 
-    async def callback_broadcast_cancel(call: CallbackQuery, state: FSMContext):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await state.clear()
-        broadcast_cache.pop(call.from_user.id, None)
-        await call.answer("Рассылка отменена.")
-        await call.message.edit_text(
-            ui_manager.format_panel("Рассылка отменена", icon="✕"),
-            reply_markup=_build_back_keyboard(),
-        )
-
-    async def callback_admin_back(call: CallbackQuery, state: FSMContext):
-        if not call.from_user or not is_admin(call.from_user.id) or not call.message:
-            return
-
-        await state.clear()
-        await call.answer()
-        await call.message.edit_text(
-            _build_admin_panel_text(),
-            reply_markup=_build_admin_keyboard(),
-        )
-
-    router.message.register(admin_command, Command("admin"))
-    router.message.register(broadcast_command, Command("broadcast"))
-    router.message.register(stats_global_command, Command("stats_global"))
-    router.message.register(process_broadcast_message, BroadcastStates.waiting_for_message)
-
+    router.message.register(admin, Command("admin"))
+    router.message.register(begin_broadcast, Command("broadcast"))
+    router.message.register(stats_command, Command("stats_global"))
+    router.message.register(receive_broadcast, BroadcastStates.waiting_for_message)
     router.callback_query.register(
-        callback_admin_stats_global,
-        lambda call: call.data == "admin_stats_global",
+        admin_callback, lambda call: bool(call.data and call.data.startswith("admin:"))
     )
     router.callback_query.register(
-        callback_admin_broadcast,
-        lambda call: call.data == "admin_broadcast",
+        broadcast_callback, lambda call: bool(call.data and call.data.startswith("broadcast:"))
     )
-    router.callback_query.register(
-        callback_admin_user_list,
-        lambda call: call.data == "admin_user_list",
-    )
-    router.callback_query.register(
-        callback_admin_clear_db,
-        lambda call: call.data == "admin_clear_db",
-    )
-    router.callback_query.register(
-        callback_admin_clear_confirm,
-        lambda call: call.data == "admin_clear_confirm",
-    )
-    router.callback_query.register(
-        callback_broadcast_confirm,
-        lambda call: call.data == "broadcast_confirm",
-    )
-    router.callback_query.register(
-        callback_broadcast_cancel,
-        lambda call: call.data == "broadcast_cancel",
-    )
-    router.callback_query.register(
-        callback_admin_back,
-        lambda call: call.data == "admin_back",
-    )
+    return router

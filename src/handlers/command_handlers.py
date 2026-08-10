@@ -1,5 +1,6 @@
-import logging
-import time
+from __future__ import annotations
+
+import asyncio
 from datetime import datetime
 
 from aiogram import Router
@@ -8,234 +9,133 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..core.user_stats import get_stats_manager
-from ..utils.ui_manager import get_ui_manager
+from ..core.download_manager import DownloadManager
+from ..core.models import TaskStatus
+from ..core.user_stats import UserStatsManager
+from ..utils.presentation import panel, progress_bar
 
-logger = logging.getLogger(__name__)
 
-
-def register_command_handlers(router: Router):
-    ui_manager = get_ui_manager()
+def build_command_router(manager: DownloadManager, stats: UserStatsManager) -> Router:
+    router = Router(name="commands")
 
     async def safe_reply(message: Message, text: str, **kwargs):
         try:
-            return await message.reply(text, **kwargs)
-        except (TelegramBadRequest, TelegramForbiddenError) as exc:
-            logger.warning("Не удалось ответить на команду в чате %s: %s", message.chat.id, exc)
+            return await message.reply(text, parse_mode="HTML", **kwargs)
+        except (TelegramBadRequest, TelegramForbiddenError):
             return None
 
-    async def send_welcome(message: Message, state: FSMContext):
+    async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        welcome_text = ui_manager.format_panel(
-            "ReSave",
-            [
-                "Скачиваю видео, аудио, превью и медиа по ссылке.",
-                "",
-                "Как начать:",
-                "1. Отправьте ссылку на видео.",
-                "2. Выберите качество или формат.",
-                "3. Получите готовый файл.",
-                "",
-                "Платформы: YouTube, TikTok, Instagram, X/Twitter, Facebook, Vimeo, Twitch, Reddit.",
-            ],
-            icon="⚡",
-            footer="Команды: /help · /status · /stats · /cancel",
+        if message.from_user:
+            await asyncio.to_thread(stats.ensure_user, message.from_user.id)
+        await safe_reply(
+            message,
+            panel(
+                "ReSave",
+                [
+                    "Скачиваю видео, аудио, превью, субтитры и фото по ссылке.",
+                    "",
+                    "1. Отправьте ссылку.",
+                    "2. Выберите формат и качество.",
+                    "3. Получите готовый файл.",
+                    "",
+                    "Работаю с YouTube, TikTok, Instagram, X/Twitter, Facebook, Vimeo, Twitch, Reddit и другими источниками yt-dlp.",
+                ],
+                icon="⚡",
+            ),
         )
-        await safe_reply(message, welcome_text)
 
-    async def help_command(message: Message, state: FSMContext):
+    async def help_command(message: Message, state: FSMContext) -> None:
         await state.clear()
-        help_text = ui_manager.format_panel(
-            "Как пользоваться ReSave",
-            [
-                "Личные сообщения",
-                "1. Отправьте ссылку.",
-                "2. Выберите качество, MP3, GIF, субтитры или превью.",
-                "3. Дождитесь готового файла.",
-                "",
-                "Группы",
-                "1. Добавьте бота в группу.",
-                "2. Отправьте ссылку.",
-                "3. Бот скачает видео в среднем качестве.",
-                "",
-                "Если платформа поддерживается, бот попробует обработать ссылку через yt-dlp.",
-            ],
-            icon="📖",
+        await safe_reply(
+            message,
+            panel(
+                "Как пользоваться",
+                [
+                    "В личном чате отправьте ссылку и выберите формат кнопкой.",
+                    "В группе бот автоматически скачивает видео до 720p в ответ на ссылку.",
+                    "Плейлисты добавляются в очередь, но ограничены безопасным числом элементов.",
+                    "",
+                    "/status — текущие загрузки",
+                    "/cancel — отменить свои загрузки",
+                    "/stats — личная статистика",
+                ],
+                icon="📖",
+            ),
         )
-        await safe_reply(message, help_text)
 
-    async def status_command(message: Message, state: FSMContext):
+    async def status(message: Message, state: FSMContext) -> None:
         await state.clear()
-        from .download_handlers import get_download_manager
-
-        manager = get_download_manager()
-        if manager is None:
-            await safe_reply(message, "⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
+        if not message.from_user:
             return
-
-        with manager.lock:
-            user_tasks = {
-                task_id: task
-                for task_id, task in manager.tasks.items()
-                if task.chat_id == message.chat.id and task.status in {"downloading", "pending"}
-            }
-
-        if not user_tasks:
+        tasks = manager.snapshot(user_id=message.from_user.id, chat_id=message.chat.id)
+        if not tasks:
             await safe_reply(
                 message,
-                ui_manager.format_panel(
-                    "Активных загрузок нет",
-                    ["Отправьте новую ссылку, и я покажу варианты скачивания."],
-                    icon="✅",
-                )
+                panel("Активных загрузок нет", ["Отправьте новую ссылку."], icon="✅"),
             )
             return
 
-        status_lines = []
-
-        for task in user_tasks.values():
-            title = task.info.get("title", "Неизвестное видео")
-
-            if task.status == "downloading":
-                progress_text = ui_manager.create_progress_bar(task.progress)
-
-                if task.started_at and task.progress > 0.05:
-                    elapsed = time.time() - task.started_at
-                    total_estimated = elapsed / task.progress
-                    remaining = total_estimated - elapsed
-                    if remaining > 0:
-                        remaining_str = f"Осталось: {manager._format_time(remaining)}"
-                    else:
-                        remaining_str = "Завершается..."
-                else:
-                    remaining_str = "Вычисляется..."
-
-                status_lines.append(f"🎬 {title}")
-                status_lines.append(f"⬇️ {progress_text}")
-                status_lines.append(f"⏱️ {remaining_str}")
-                status_lines.append("")
+        lines: list[str] = []
+        for task in tasks:
+            lines.append(task.title)
+            if task.status == TaskStatus.PENDING:
+                lines.append("⏳ В очереди")
             else:
-                status_lines.append(f"🎬 {title}")
-                status_lines.append("⏳ В очереди")
-                status_lines.append("")
-
+                lines.append(f"{task.phase}: {progress_bar(task.progress)}")
+            lines.append("")
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="❌ Отменить все",
-                        callback_data="cancel_all_downloads",
-                    )
-                ]
+                [InlineKeyboardButton(text="❌ Отменить все", callback_data="cancel_all_downloads")]
             ]
         )
+        await safe_reply(message, panel("Ваши загрузки", lines, icon="📦"), reply_markup=keyboard)
 
+    async def cancel(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if not message.from_user:
+            return
+        count = manager.cancel_for_user(message.from_user.id, chat_id=message.chat.id)
+        title = "Загрузки отменены" if count else "Отменять нечего"
         await safe_reply(
-            message,
-            ui_manager.format_panel("Ваши загрузки", status_lines, icon="📦"),
-            reply_markup=keyboard,
+            message, panel(title, [f"Отменено: {count}"], icon="✅" if count else "⏳")
         )
 
-    async def cancel_download(message: Message, state: FSMContext):
+    async def stats_command(message: Message, state: FSMContext) -> None:
         await state.clear()
-        from .download_handlers import get_download_manager
-
-        manager = get_download_manager()
-        if manager is None:
-            await safe_reply(message, "⚙️ Менеджер загрузок еще запускается. Повторите через пару секунд.")
+        if not message.from_user:
             return
-
-        with manager.lock:
-            user_tasks = {
-                task_id: task
-                for task_id, task in manager.tasks.items()
-                if task.chat_id == message.chat.id and task.status in {"downloading", "pending"}
-            }
-
-        if not user_tasks:
-            await safe_reply(
-                message,
-                ui_manager.format_panel(
-                    "Отменять нечего",
-                    ["Сейчас у вас нет активных загрузок."],
-                    icon="⏳",
-                )
-            )
-            return
-
-        cancelled_count = 0
-        for task_id in user_tasks:
-            if manager.cancel_task(task_id):
-                cancelled_count += 1
-
-        await safe_reply(
-            message,
-            ui_manager.format_panel(
-                "Загрузки отменены",
-                [f"Отменено: {cancelled_count}", "Теперь можно начать новую."],
-                icon="✅",
-            )
-        )
-
-    async def stats_command(message: Message, state: FSMContext):
-        await state.clear()
-        stats_manager = get_stats_manager()
-        user_stats = stats_manager.get_user_stats(message.chat.id)
-
-        stats_lines = []
-
-        if user_stats.downloads_count == 0:
-            stats_lines.extend(
-                [
-                    "Пока нет загрузок.",
-                    "Отправьте любую ссылку на видео, чтобы начать.",
-                ]
-            )
+        value = await asyncio.to_thread(stats.get_user_stats, message.from_user.id)
+        if value.downloads_count == 0:
+            lines = ["Пока нет завершённых загрузок."]
         else:
-            stats_lines.extend(
-                ui_manager.format_key_value_list(
-                    [
-                        ("Всего загрузок", str(user_stats.downloads_count)),
-                        ("Видео", str(user_stats.total_videos)),
-                        ("Аудио", str(user_stats.total_audios)),
-                    ]
-                )
-            )
-            if user_stats.total_other_downloads:
-                stats_lines.append(f"• Прочее: {user_stats.total_other_downloads}")
-            stats_lines.append(f"• Общий размер: {user_stats.total_size_mb:.1f} MB")
+            attempts = value.downloads_count + value.failed_downloads
+            success = value.downloads_count / attempts * 100 if attempts else 0
+            lines = [
+                f"Всего: {value.downloads_count}",
+                f"Видео: {value.total_videos}",
+                f"Аудио: {value.total_audios}",
+                f"Прочее: {value.total_other_downloads}",
+                f"Ошибок: {value.failed_downloads}",
+                f"Объём: {value.total_size_mb:.1f} MB",
+                f"Успешность: {success:.1f}%",
+            ]
+            if value.first_download_date:
+                lines.append(f"Первая загрузка: {_format_date(value.first_download_date)}")
+            if value.last_download_date:
+                lines.append(f"Последняя загрузка: {_format_date(value.last_download_date)}")
+        await safe_reply(message, panel("Ваша статистика", lines, icon="📊"))
 
-            if user_stats.failed_downloads > 0:
-                stats_lines.append(f"• Ошибок загрузок: {user_stats.failed_downloads}")
-
-            if user_stats.first_download_date:
-                first_date = datetime.fromisoformat(user_stats.first_download_date)
-                stats_lines.append(
-                    f"• Первая загрузка: {first_date.strftime('%d.%m.%Y %H:%M')}"
-                )
-
-            if user_stats.last_download_date:
-                last_date = datetime.fromisoformat(user_stats.last_download_date)
-                stats_lines.append(
-                    f"• Последняя загрузка: {last_date.strftime('%d.%m.%Y %H:%M')}"
-                )
-
-            stats_lines.append("")
-            avg_size = user_stats.total_size_mb / user_stats.downloads_count
-            stats_lines.append(f"Средний размер файла: {avg_size:.1f} MB")
-
-            total_attempts = user_stats.downloads_count + user_stats.failed_downloads
-            if total_attempts > 0:
-                success_rate = (user_stats.downloads_count / total_attempts) * 100
-                stats_lines.append(f"Успешные загрузки: {success_rate:.1f}%")
-
-        await safe_reply(
-            message,
-            ui_manager.format_panel("Ваша статистика", stats_lines, icon="📊")
-        )
-
-    router.message.register(send_welcome, CommandStart())
+    router.message.register(start, CommandStart())
     router.message.register(help_command, Command("help"))
-    router.message.register(status_command, Command("status"))
-    router.message.register(cancel_download, Command("cancel"))
+    router.message.register(status, Command("status"))
+    router.message.register(cancel, Command("cancel"))
     router.message.register(stats_command, Command("stats"))
+    return router
+
+
+def _format_date(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return value

@@ -47,6 +47,7 @@ mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 export BOT_API_BASE_URL="http://$BOT_API_HOST:$BOT_API_PORT"
 export BOT_API_IS_LOCAL="true"
+export BOT_API_USE_FILE_URI="true"
 BOT_API_LOG_FILE="$LOG_DIR/telegram-bot-api.log"
 
 log() {

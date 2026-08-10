@@ -1,192 +1,216 @@
-import logging
-import queue
-import threading
-import time
+from __future__ import annotations
 
-import config
-from .models import DownloadTask
-from ..utils.ui_manager import get_ui_manager
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable
+
+from ..utils.presentation import panel, user_error
+from .media_downloader import DownloadCancelled
+from .models import ACTIVE_STATUSES, DownloadTask, TaskStatus
+from .telegram_gateway import TelegramGateway
+from .user_stats import UserStatsManager
 
 logger = logging.getLogger(__name__)
 
 
+class QueueCapacityError(RuntimeError):
+    pass
+
+
+class UserTaskLimitError(RuntimeError):
+    pass
+
+
 class DownloadManager:
-    def __init__(self, max_concurrent_downloads=3, max_retries=3):
-        self.tasks = {}
-        self.task_queue = queue.Queue()
+    def __init__(
+        self,
+        *,
+        processor: Callable[[DownloadTask], Awaitable[None]],
+        progress_reporter: Callable[[DownloadTask], Awaitable[None]],
+        telegram: TelegramGateway,
+        stats: UserStatsManager,
+        max_concurrent_downloads: int,
+        max_queue_size: int,
+        max_tasks_per_user: int,
+        progress_update_seconds: int,
+    ):
+        self.processor = processor
+        self.progress_reporter = progress_reporter
+        self.telegram = telegram
+        self.stats = stats
         self.max_concurrent_downloads = max_concurrent_downloads
-        self.max_retries = max_retries
-        self.active_count = 0
-        self.lock = threading.Lock()
-        self.worker_threads = []
-        self.status_thread = None
-        self.bot = None
+        self.max_tasks_per_user = max_tasks_per_user
+        self.progress_update_seconds = progress_update_seconds
+        self._queue: asyncio.Queue[DownloadTask] = asyncio.Queue(maxsize=max_queue_size)
+        self._tasks: dict[str, DownloadTask] = {}
+        self._workers: list[asyncio.Task] = []
+        self._progress_task: asyncio.Task | None = None
         self._started = False
 
-    def set_bot(self, bot):
-        self.bot = bot
-        self._start_workers_once()
+    @property
+    def queue_size(self) -> int:
+        return self._queue.qsize()
 
-    def _start_workers_once(self):
-        with self.lock:
-            if self._started:
-                return
-            self._started = True
+    @property
+    def active_count(self) -> int:
+        return sum(task.status != TaskStatus.PENDING for task in self._tasks.values())
 
-        for _ in range(self.max_concurrent_downloads):
-            worker = threading.Thread(target=self._worker, daemon=True)
-            worker.start()
-            self.worker_threads.append(worker)
+    async def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._workers = [
+            asyncio.create_task(self._worker(index), name=f"download-worker-{index}")
+            for index in range(self.max_concurrent_downloads)
+        ]
+        self._progress_task = asyncio.create_task(self._progress_loop(), name="download-progress")
+        logger.info("Download manager started with %s workers", len(self._workers))
 
-        self.status_thread = threading.Thread(target=self._status_updater, daemon=True)
-        self.status_thread.start()
+    async def stop(self) -> None:
+        if not self._started:
+            return
+        self._started = False
+        for task in self._tasks.values():
+            task.cancel()
+        if self._progress_task:
+            self._progress_task.cancel()
+            await asyncio.gather(self._progress_task, return_exceptions=True)
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout=15)
+        except TimeoutError:
+            logger.warning("Timed out while waiting for download workers to stop")
+        for worker in self._workers:
+            worker.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers.clear()
+        self._progress_task = None
+        self._tasks.clear()
+        logger.info("Download manager stopped")
 
-    def get_user_task_count(self, chat_id):
-        if chat_id <= 0:
-            return 0
-
-        with self.lock:
-            return sum(
-                1
-                for task in self.tasks.values()
-                if task.chat_id == chat_id and task.status in {"pending", "downloading"}
-            )
-
-    def add_task(
-        self,
-        url,
-        chat_id,
-        message_id,
-        info,
-        action,
-        format_param=None,
-        reply_to_id=None,
-        silent_mode=False,
-    ):
-        task = DownloadTask(
-            url=url,
-            chat_id=chat_id,
-            message_id=message_id,
-            info=info,
-            action=action,
-            format_param=format_param,
-            cancel_event=threading.Event(),
-            reply_to_id=reply_to_id,
-            silent_mode=silent_mode,
+    async def enqueue(self, task: DownloadTask) -> int:
+        if not self._started:
+            raise RuntimeError("Менеджер загрузок ещё не запущен")
+        active_for_user = sum(
+            1
+            for current in self._tasks.values()
+            if current.user_id == task.user_id and current.status in ACTIVE_STATUSES
         )
+        if active_for_user >= self.max_tasks_per_user:
+            raise UserTaskLimitError(
+                f"У вас уже {active_for_user} активных загрузок. Дождитесь завершения или отмените их."
+            )
+        if self._queue.full():
+            raise QueueCapacityError("Очередь заполнена. Попробуйте через несколько минут.")
+        self._tasks[task.task_id] = task
+        self._queue.put_nowait(task)
+        return self._queue.qsize()
 
-        with self.lock:
-            self.tasks[task.task_id] = task
-            self.task_queue.put(task)
+    def snapshot(
+        self, *, user_id: int | None = None, chat_id: int | None = None
+    ) -> list[DownloadTask]:
+        tasks = list(self._tasks.values())
+        if user_id is not None:
+            tasks = [task for task in tasks if task.user_id == user_id]
+        if chat_id is not None:
+            tasks = [task for task in tasks if task.chat_id == chat_id]
+        return sorted(tasks, key=lambda task: task.created_at)
 
-        return task.task_id
+    def cancel_for_user(self, user_id: int, *, chat_id: int | None = None) -> int:
+        cancelled = 0
+        for task in self.snapshot(user_id=user_id, chat_id=chat_id):
+            if (
+                task.status
+                in {
+                    TaskStatus.PENDING,
+                    TaskStatus.DOWNLOADING,
+                    TaskStatus.PROCESSING,
+                }
+                and not task.cancel_event.is_set()
+            ):
+                task.cancel()
+                cancelled += 1
+        return cancelled
 
-    def cancel_task(self, task_id):
-        with self.lock:
-            if task_id in self.tasks:
-                task = self.tasks[task_id]
-                task.cancel_event.set()
-                task.status = "cancelled"
-                return True
-        return False
-
-    def get_task(self, task_id):
-        with self.lock:
-            return self.tasks.get(task_id)
-
-    def _worker(self):
+    async def _worker(self, worker_id: int) -> None:
         while True:
-            task = self.task_queue.get()
-
-            with self.lock:
-                self.active_count += 1
-
+            task = await self._queue.get()
             try:
                 if task.cancel_event.is_set():
-                    continue
-
-                task.status = "downloading"
+                    raise DownloadCancelled("Загрузка отменена пользователем")
+                task.status = TaskStatus.DOWNLOADING
+                task.phase = "Подготовка загрузки"
                 task.started_at = time.time()
-                self._download_and_send_task(task)
-
-                if not task.cancel_event.is_set():
-                    task.status = "completed"
-                    task.completed_at = time.time()
-
-            except Exception as exc:
-                logger.exception("Ошибка при выполнении задачи %s: %s", task.task_id, exc)
-                task.status = "failed"
-                task.error = str(exc)
-
-            finally:
-                with self.lock:
-                    self.active_count -= 1
-                    self.tasks.pop(task.task_id, None)
-                self.task_queue.task_done()
-
-    def _download_and_send_task(self, task):
-        from .download_handler import handle_download_task
-
-        handle_download_task(task, self.bot, config.TEMP_DIR)
-
-    def _status_updater(self):
-        while True:
-            try:
-                with self.lock:
-                    active_tasks = {
-                        task_id: task
-                        for task_id, task in self.tasks.items()
-                        if task.status == "downloading"
-                        and task.progress < 1.0
-                        and not task.silent_mode
-                    }
-
-                for task_id, task in active_tasks.items():
+                await self.processor(task)
+                if task.cancel_event.is_set():
+                    raise DownloadCancelled("Загрузка отменена пользователем")
+                task.status = TaskStatus.COMPLETED
+                task.phase = "Готово"
+                task.completed_at = time.time()
+                if not task.silent:
                     try:
-                        if task.progress > 0 and task.progress < 1.0:
-                            ui_manager = get_ui_manager()
-                            progress_bar = ui_manager.create_progress_bar(task.progress)
-
-                            if task.started_at and task.progress > 0.05:
-                                elapsed = time.time() - task.started_at
-                                total_estimated = elapsed / task.progress
-                                remaining = total_estimated - elapsed
-                                if remaining > 0:
-                                    remaining_str = f"Осталось: {self._format_time(remaining)}"
-                                else:
-                                    remaining_str = ""
-                            else:
-                                remaining_str = ""
-
-                            self.bot.edit_message_text(
-                                ui_manager.format_panel(
-                                    "Скачивание",
-                                    [
-                                        f"⬇️ {progress_bar}",
-                                        f"⏱️ {remaining_str}" if remaining_str else "⏱️ Время уточняется",
-                                        "",
-                                        "Файл будет отправлен сразу после обработки.",
-                                    ],
-                                    icon="📦",
-                                ),
-                                task.chat_id,
-                                task.message_id,
-                            )
+                        await self.telegram.delete_status(task.chat_id, task.status_message_id)
                     except Exception as exc:
-                        logger.debug("Ошибка при обновлении статуса задачи %s: %s", task_id, exc)
-
+                        logger.debug("Cannot delete completed task status: %s", exc)
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
+            except DownloadCancelled:
+                task.status = TaskStatus.CANCELLED
+                task.phase = "Отменено"
+                if not task.silent and self._started:
+                    try:
+                        await self.telegram.edit_status(
+                            task.chat_id,
+                            task.status_message_id,
+                            panel("Загрузка отменена", icon="✕"),
+                        )
+                    except Exception as exc:
+                        logger.debug("Cannot edit cancelled task status: %s", exc)
             except Exception as exc:
-                logger.error("Ошибка в потоке обновления статуса: %s", exc)
+                task.status = TaskStatus.FAILED
+                task.error = str(exc)
+                task.completed_at = time.time()
+                logger.exception("Task %s failed in worker %s", task.task_id, worker_id)
+                try:
+                    await asyncio.to_thread(self.stats.record_failed_download, task.user_id)
+                except Exception as stats_exc:
+                    logger.error("Cannot record failed task: %s", stats_exc)
+                if not task.silent:
+                    try:
+                        await self.telegram.edit_status(
+                            task.chat_id,
+                            task.status_message_id,
+                            user_error(exc),
+                        )
+                    except Exception as status_exc:
+                        logger.debug("Cannot report failed task status: %s", status_exc)
+            finally:
+                self._tasks.pop(task.task_id, None)
+                self._queue.task_done()
 
-            time.sleep(2)
+    async def _progress_loop(self) -> None:
+        last_progress: dict[str, float] = {}
+        while True:
+            await asyncio.sleep(self.progress_update_seconds)
+            for task in list(self._tasks.values()):
+                if task.silent or task.status not in ACTIVE_STATUSES:
+                    continue
+                previous = last_progress.get(task.task_id, -1.0)
+                if task.progress == previous and task.status == TaskStatus.DOWNLOADING:
+                    continue
+                last_progress[task.task_id] = task.progress
+                try:
+                    await self.progress_reporter(task)
+                except Exception as exc:
+                    logger.debug("Cannot report task %s progress: %s", task.task_id, exc)
+            active_ids = set(self._tasks)
+            for task_id in set(last_progress) - active_ids:
+                last_progress.pop(task_id, None)
 
     @staticmethod
-    def _generate_progress_bar(progress, length=10):
-        filled = int(progress * length)
-        return f"{'▓' * filled}{'░' * (length - filled)}"
-
-    @staticmethod
-    def _format_time(seconds):
+    def format_time(seconds: float) -> str:
         if seconds < 60:
             return f"{seconds:.0f} сек"
         if seconds < 3600:

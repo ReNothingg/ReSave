@@ -1,6 +1,4 @@
-aiogram
-yt-dlp
-Pillow
-requests
-gallery-dl
-python-dotenv
+aiogram>=3.20,<4
+gallery-dl>=1.29,<2
+python-dotenv>=1.1,<2
+yt-dlp>=2025.6.30
