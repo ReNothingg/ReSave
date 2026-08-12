@@ -13,6 +13,7 @@ BOT_API_STARTUP_TIMEOUT="${BOT_API_STARTUP_TIMEOUT:-15}"
 RESTART_ON_FAILURE="${RESTART_ON_FAILURE:-true}"
 RESTART_DELAY="${RESTART_DELAY:-5}"
 LOCK_DIR="${LOCK_DIR:-$APP_DIR/.run_alwaysdata_local_bot_api.lock}"
+STALE_TASK_MAX_AGE_MINUTES="${STALE_TASK_MAX_AGE_MINUTES:-60}"
 BOT_API_PID=""
 BOT_PID=""
 
@@ -43,7 +44,12 @@ if [ -z "${TELEGRAM_API_ID:-}" ] || [ -z "${TELEGRAM_API_HASH:-}" ]; then
   exit 1
 fi
 
-mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
+case "$STALE_TASK_MAX_AGE_MINUTES" in
+  ''|*[!0-9]*)
+    echo "STALE_TASK_MAX_AGE_MINUTES must be a non-negative integer." >&2
+    exit 1
+    ;;
+esac
 
 export BOT_API_BASE_URL="http://$BOT_API_HOST:$BOT_API_PORT"
 export BOT_API_IS_LOCAL="true"
@@ -74,6 +80,18 @@ acquire_lock() {
   rm -rf "$LOCK_DIR"
   mkdir "$LOCK_DIR"
   printf '%s\n' "$$" >"$LOCK_DIR/pid"
+}
+
+cleanup_stale_tasks() {
+  local task_root="$APP_DIR/temp_downloads"
+  [ -d "$task_root" ] || return 0
+
+  local removed
+  removed="$(find "$task_root" -mindepth 1 -maxdepth 1 -type d -name 'task_*' \
+    -mmin "+$STALE_TASK_MAX_AGE_MINUTES" -prune -print -exec rm -rf -- {} +)"
+  if [ -n "$removed" ]; then
+    log "Removed stale download task directories older than ${STALE_TASK_MAX_AGE_MINUTES} min"
+  fi
 }
 
 is_running() {
@@ -117,6 +135,8 @@ trap cleanup EXIT
 trap shutdown HUP INT TERM
 
 acquire_lock
+cleanup_stale_tasks
+mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 start_bot_api() {
   log "Starting telegram-bot-api at $BOT_API_BASE_URL"
