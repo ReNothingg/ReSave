@@ -24,7 +24,7 @@ git pull --ff-only origin "$BRANCH"
 log "Updating Python dependencies"
 "$PYTHON_BIN" -m pip install --user --upgrade -r requirements.txt
 
-installed_version="$($BOT_API_BIN --version 2>/dev/null || true)"
+installed_version="$($BOT_API_BIN --version 2>&1 || true)"
 if [[ "$installed_version" != *"$BOT_API_VERSION"* ]]; then
   log "Installing telegram-bot-api $BOT_API_VERSION"
   mkdir -p "$(dirname "$BOT_API_BIN")"
@@ -61,5 +61,5 @@ if ! kill -0 "$service_pid" 2>/dev/null; then
   exit 1
 fi
 
-log "ReSave is running: pid=$service_pid, $($BOT_API_BIN --version 2>/dev/null || true)"
+log "ReSave is running: pid=$service_pid, $($BOT_API_BIN --version 2>&1 || true)"
 tail -n 20 "$LOG_DIR/service.log" || true

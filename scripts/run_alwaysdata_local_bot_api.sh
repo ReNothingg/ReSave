@@ -151,6 +151,7 @@ start_bot_api() {
     --dir="$BOT_API_DIR" \
     --temp-dir="$BOT_API_TEMP_DIR" \
     --verbosity="${BOT_API_VERBOSITY:-0}" \
+    --memory-verbosity="${BOT_API_MEMORY_VERBOSITY:-0}" \
     >"$BOT_API_LOG_FILE" 2>&1 &
   BOT_API_PID=$!
 }
