@@ -40,10 +40,14 @@ if [ -f "$LOCK_DIR/pid" ]; then
   if [[ "$previous_pid" =~ ^[0-9]+$ ]] && kill -0 "$previous_pid" 2>/dev/null; then
     log "Stopping previous service pid=$previous_pid"
     kill "$previous_pid"
-    for _ in {1..20}; do
+    for _ in {1..120}; do
       kill -0 "$previous_pid" 2>/dev/null || break
       sleep 0.5
     done
+    if kill -0 "$previous_pid" 2>/dev/null; then
+      log "Previous service did not stop cleanly; refusing to start a second instance"
+      exit 1
+    fi
   fi
 fi
 
@@ -54,9 +58,22 @@ nohup env APP_DIR="$APP_DIR" PYTHON_BIN="$PYTHON_BIN" BOT_API_BIN="$BOT_API_BIN"
   bash scripts/run_alwaysdata_local_bot_api.sh >>"$LOG_DIR/service.log" 2>&1 </dev/null &
 service_pid=$!
 
-sleep 12
-if ! kill -0 "$service_pid" 2>/dev/null; then
-  log "Service failed to start"
+ready=false
+for _ in {1..60}; do
+  if ! kill -0 "$service_pid" 2>/dev/null; then
+    break
+  fi
+  if curl --silent --max-time 2 "http://127.0.0.1:8081/" >/dev/null \
+    && ps -o args= --ppid "$service_pid" | grep -q '[m]ain.py'; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+
+if [ "$ready" != "true" ]; then
+  log "Bot API or ReSave bot failed to become ready"
+  kill "$service_pid" 2>/dev/null || true
   tail -n 100 "$LOG_DIR/service.log" || true
   exit 1
 fi
