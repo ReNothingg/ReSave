@@ -131,8 +131,9 @@ bash scripts/run_alwaysdata_local_bot_api.sh
 bash /home/renothingg/ReSave/scripts/update_and_restart_alwaysdata.sh
 ```
 
-Скрипт сохраняет существующий `.env`, выполняет только fast-forward обновление ветки `main` и
-проверяет, что новый процесс не завершился сразу после запуска.
+Скрипт сохраняет существующий `.env`, выполняет только fast-forward обновление ветки `main`,
+проверяет контрольные суммы Bot API и FFmpeg и перезапускает штатный alwaysdata Service №23340.
+Для API-рестарта в `.env` должен быть `ALWAYSDATA_API_TOKEN` из профиля alwaysdata.
 
 ## Проверки
 

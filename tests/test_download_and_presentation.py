@@ -55,6 +55,23 @@ def test_video_variants_end_with_compatible_fallback(tmp_path, monkeypatch):
     assert variants[-1].format_selector == "bv*+ba/b"
 
 
+def test_completed_file_survives_broken_ffprobe(tmp_path, monkeypatch):
+    media = tmp_path / "media.mp4"
+    media.write_bytes(b"completed-media")
+    task = DownloadTask(
+        url="https://example.com/video",
+        chat_id=1,
+        user_id=1,
+        status_message_id=1,
+        reply_to_message_id=None,
+        info={},
+        action=DownloadAction.BEST,
+    )
+    monkeypatch.setattr(MediaDownloader, "_stream_types", staticmethod(lambda path: set()))
+
+    assert MediaDownloader(_settings(tmp_path))._select_completed_media(task, tmp_path) == media
+
+
 def test_rich_and_classic_panels_escape_user_content():
     classic = panel("<title>", ["A & B"], icon="⚡")
     rich = rich_panel(

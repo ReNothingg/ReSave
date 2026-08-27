@@ -214,10 +214,11 @@ class MediaDownloader:
             reverse=True,
         )
         required_stream = "audio" if task.action == DownloadAction.AUDIO else "video"
-        ffprobe_available = bool(_media_tool("ffprobe"))
         for path in files:
             stream_types = self._stream_types(path)
-            if not ffprobe_available or required_stream in stream_types:
+            # A broken or unavailable ffprobe must not discard a completed file.
+            # Intermediate video/audio tracks are filtered out above already.
+            if not stream_types or required_stream in stream_types:
                 return path
         raise FileNotFoundError(f"yt-dlp не создал итоговый файл с потоком типа {required_stream}")
 
