@@ -37,12 +37,20 @@ def _admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
-                InlineKeyboardButton(text="📣 Рассылка", callback_data="admin:broadcast"),
+                InlineKeyboardButton(
+                    text="📊 Статистика", callback_data="admin:stats", style="primary"
+                ),
+                InlineKeyboardButton(
+                    text="📣 Рассылка", callback_data="admin:broadcast", style="primary"
+                ),
             ],
             [
-                InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"),
-                InlineKeyboardButton(text="🧹 Очистить БД", callback_data="admin:clear"),
+                InlineKeyboardButton(
+                    text="👥 Пользователи", callback_data="admin:users", style="primary"
+                ),
+                InlineKeyboardButton(
+                    text="🧹 Очистить БД", callback_data="admin:clear", style="danger"
+                ),
             ],
         ]
     )
@@ -58,8 +66,12 @@ def _confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data="broadcast:confirm"),
-                InlineKeyboardButton(text="❌ Отменить", callback_data="broadcast:cancel"),
+                InlineKeyboardButton(
+                    text="✅ Подтвердить", callback_data="broadcast:confirm", style="success"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отменить", callback_data="broadcast:cancel", style="danger"
+                ),
             ]
         ]
     )
@@ -209,9 +221,13 @@ def build_admin_router(settings: Settings, stats: UserStatsManager) -> Router:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="✅ Очистить", callback_data="admin:clear-confirm"
+                            text="✅ Очистить",
+                            callback_data="admin:clear-confirm",
+                            style="danger",
                         ),
-                        InlineKeyboardButton(text="❌ Отмена", callback_data="admin:back"),
+                        InlineKeyboardButton(
+                            text="❌ Отмена", callback_data="admin:back", style="primary"
+                        ),
                     ]
                 ]
             )

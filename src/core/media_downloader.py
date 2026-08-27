@@ -76,8 +76,10 @@ class MediaDownloader:
             "noresizebuffer": True,
             "http_chunk_size": 5 * 1024 * 1024,
             "concurrent_fragment_downloads": 1,
+            # Shared hosts often advertise IPv6 even when the route is unstable.
+            # A failed IPv6 route commonly surfaces in yt-dlp as HTTP 403.
+            "source_address": "0.0.0.0",
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
                 "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
             },
         }
@@ -88,6 +90,10 @@ class MediaDownloader:
         ffmpeg = _media_tool("ffmpeg")
         if ffmpeg:
             options["ffmpeg_location"] = str(Path(ffmpeg).parent)
+            # yt-dlp's native HLS downloader may create an empty file for some
+            # Pinterest/CDN manifests with conflicting byte ranges. ffmpeg handles
+            # those manifests correctly and also merges separate audio/video tracks.
+            options["external_downloader"] = {"m3u8": "ffmpeg"}
         return options
 
     def _size_filter(self, info: dict[str, Any], *, incomplete: bool) -> str | None:
@@ -494,6 +500,14 @@ class MediaDownloader:
                             or task.action not in {DownloadAction.BEST, DownloadAction.RESOLUTION}
                         ),
                     ),
+                    output_template=template,
+                )
+            )
+        if _media_tool("ffmpeg"):
+            variants.append(
+                DownloadVariant(
+                    label="совместимый формат",
+                    format_selector="bv*+ba/b",
                     output_template=template,
                 )
             )

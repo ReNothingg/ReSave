@@ -10,9 +10,16 @@ from aiogram import Bot
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramNetworkError,
+    TelegramNotFound,
     TelegramRetryAfter,
 )
-from aiogram.types import FSInputFile, InputMediaPhoto, ReplyParameters
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputRichMessage,
+    ReplyParameters,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -33,6 +40,7 @@ class TelegramGateway:
         self.local_api = local_api
         self.use_file_uri = use_file_uri
         self.cloud_upload_limit = cloud_upload_limit
+        self._rich_messages_available: bool | None = None
 
     async def _retry(self, operation: Callable[[], Awaitable[T]], attempts: int = 3) -> T:
         for attempt in range(1, attempts + 1):
@@ -89,6 +97,43 @@ class TelegramGateway:
     async def send_message(self, chat_id: int, text: str, **kwargs):
         return await self._retry(
             lambda: self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", **kwargs)
+        )
+
+    async def send_rich_message(
+        self,
+        chat_id: int,
+        *,
+        rich_html: str,
+        fallback_html: str,
+        reply_to: int | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ):
+        """Use Bot API 10.2+ Rich Messages, falling back on older local servers."""
+        if self._rich_messages_available is not False:
+            try:
+                result = await self._retry(
+                    lambda: self.bot.send_rich_message(
+                        chat_id=chat_id,
+                        rich_message=InputRichMessage(html=rich_html),
+                        reply_parameters=self._reply(reply_to),
+                        reply_markup=reply_markup,
+                        request_timeout=180,
+                    )
+                )
+                self._rich_messages_available = True
+                return result
+            except (TelegramBadRequest, TelegramNotFound) as exc:
+                value = str(exc).lower()
+                if not any(marker in value for marker in ("not found", "rich", "unsupported")):
+                    raise
+                self._rich_messages_available = False
+                logger.info("Rich Messages are unavailable on this Bot API; using HTML fallback")
+
+        return await self.send_message(
+            chat_id,
+            fallback_html,
+            reply_parameters=self._reply(reply_to),
+            reply_markup=reply_markup,
         )
 
     def _can_cloud_fallback(self, path: Path) -> bool:

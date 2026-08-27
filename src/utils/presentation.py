@@ -1,12 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from html import escape
 
 
 def panel(title: str, lines: list[str] | tuple[str, ...] = (), *, icon: str = "") -> str:
     heading = f"{icon} <b>{escape(title)}</b>".strip()
     body = "\n".join(escape(str(line)) for line in lines)
-    return f"{heading}\n\n{body}" if body else heading
+    return f"{heading}\n━━━━━━━━━━━━\n{body}" if body else heading
+
+
+def rich_panel(
+    title: str,
+    *,
+    lead: str = "",
+    sections: Sequence[tuple[str, Sequence[str]]] = (),
+    footer: str = "⚡ ReSave",
+) -> str:
+    """Build a native Bot API Rich Message using only supported rich HTML tags."""
+    blocks = [f"<h1>{escape(title)}</h1>"]
+    if lead:
+        blocks.append(f"<blockquote>{escape(lead)}</blockquote>")
+    for heading, items in sections:
+        blocks.append(f"<h3>{escape(heading)}</h3>")
+        if items:
+            values = "".join(f"<li>{escape(str(item))}</li>" for item in items)
+            blocks.append(f"<ul>{values}</ul>")
+    blocks.extend(("<hr>", f"<footer>{escape(footer)}</footer>"))
+    return "".join(blocks)
 
 
 def progress_bar(progress: float, width: int = 12) -> str:
@@ -45,6 +66,14 @@ def user_error(exc: BaseException) -> str:
         detail = "Файл больше доступного лимита Telegram. Выберите качество ниже."
     elif "ffmpeg" in value:
         detail = "FFmpeg недоступен или не смог обработать медиа."
+    elif "403" in value or "forbidden" in value:
+        detail = (
+            "Источник отклонил загрузку. Cookies обновлены не были или ссылка временно защищена."
+        )
+    elif "requested format" in value or "format is not available" in value:
+        detail = "Выбранное качество недоступно. Попробуйте другое качество или повторите позже."
+    elif "disk quota" in value or "no space" in value:
+        detail = "На сервере закончилось место. Администратор уже получил техническую ошибку."
     elif "cancel" in value or "отмен" in value:
         detail = "Загрузка отменена."
     elif "timeout" in value or "no progress" in value:

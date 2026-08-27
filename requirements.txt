@@ -1,4 +1,4 @@
-aiogram>=3.20,<4
+aiogram>=3.31,<4
 gallery-dl>=1.29,<2
 python-dotenv>=1.1,<2
-yt-dlp>=2025.6.30
+yt-dlp>=2026.8.19,<2027

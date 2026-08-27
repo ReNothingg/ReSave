@@ -124,6 +124,16 @@ bash scripts/run_alwaysdata_local_bot_api.sh
 
 Путь к проекту, Python и бинарнику задаются переменными `APP_DIR`, `PYTHON_BIN` и `BOT_API_BIN`.
 
+Обновить код, зависимости, локальный Bot API и перезапустить сервис на alwaysdata можно одной
+командой:
+
+```bash
+bash /home/renothingg/ReSave/scripts/update_and_restart_alwaysdata.sh
+```
+
+Скрипт сохраняет существующий `.env`, выполняет только fast-forward обновление ветки `main` и
+проверяет, что новый процесс не завершился сразу после запуска.
+
 ## Проверки
 
 ```bash

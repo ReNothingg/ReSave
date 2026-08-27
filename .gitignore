@@ -13,6 +13,8 @@ cookies.txt
 .resave.lock
 .run_alwaysdata_local_bot_api.lock/
 .telegram-bot-api/
+.build/
+dist/
 logs/
 .env
 .env.*

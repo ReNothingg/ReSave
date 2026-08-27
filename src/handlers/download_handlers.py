@@ -36,6 +36,7 @@ def _keyboard(token: str, info: dict, resolutions: list[int]) -> InlineKeyboardM
         InlineKeyboardButton(
             text=f"🎥 {height}p",
             callback_data=f"media|{token}|res|{height}",
+            style="primary",
         )
         for height in resolutions[:12]
     ]
@@ -45,29 +46,71 @@ def _keyboard(token: str, info: dict, resolutions: list[int]) -> InlineKeyboardM
     if not resolution_buttons:
         rows.extend(
             [
-                [InlineKeyboardButton(text="🎬 Максимум", callback_data=f"media|{token}|best")],
                 [
-                    InlineKeyboardButton(text="📹 720p", callback_data=f"media|{token}|medium"),
-                    InlineKeyboardButton(text="📱 480p", callback_data=f"media|{token}|low"),
+                    InlineKeyboardButton(
+                        text="🎬 Максимум",
+                        callback_data=f"media|{token}|best",
+                        style="success",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📹 720p", callback_data=f"media|{token}|medium", style="primary"
+                    ),
+                    InlineKeyboardButton(
+                        text="📱 480p", callback_data=f"media|{token}|low", style="primary"
+                    ),
                 ],
             ]
         )
     else:
-        rows.append([InlineKeyboardButton(text="🎬 Лучшее", callback_data=f"media|{token}|best")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🎬 Лучшее", callback_data=f"media|{token}|best", style="success"
+                )
+            ]
+        )
 
-    rows.append([InlineKeyboardButton(text="🎵 MP3", callback_data=f"media|{token}|audio")])
+    rows.append(
+        [InlineKeyboardButton(text="🎵 MP3", callback_data=f"media|{token}|audio", style="primary")]
+    )
     duration = info.get("duration")
     if isinstance(duration, (int, float)) and 0 < duration <= 30:
-        rows.append([InlineKeyboardButton(text="✨ GIF", callback_data=f"media|{token}|gif")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✨ GIF", callback_data=f"media|{token}|gif", style="primary"
+                )
+            ]
+        )
     if info.get("subtitles") or info.get("automatic_captions"):
         rows.append(
-            [InlineKeyboardButton(text="📝 Субтитры", callback_data=f"media|{token}|subtitles")]
+            [
+                InlineKeyboardButton(
+                    text="📝 Субтитры",
+                    callback_data=f"media|{token}|subtitles",
+                    style="primary",
+                )
+            ]
         )
     if info.get("thumbnail"):
         rows.append(
-            [InlineKeyboardButton(text="🖼️ Превью", callback_data=f"media|{token}|thumbnail")]
+            [
+                InlineKeyboardButton(
+                    text="🖼️ Превью",
+                    callback_data=f"media|{token}|thumbnail",
+                    style="primary",
+                )
+            ]
         )
-    rows.append([InlineKeyboardButton(text="✕ Отмена", callback_data=f"media|{token}|cancel")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✕ Отмена", callback_data=f"media|{token}|cancel", style="danger"
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

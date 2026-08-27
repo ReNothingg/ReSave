@@ -136,7 +136,7 @@ async def run(settings: config.Settings | None = None) -> None:
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(build_admin_router(settings, stats))
-    dispatcher.include_router(build_command_router(manager, stats))
+    dispatcher.include_router(build_command_router(manager, stats, telegram))
     dispatcher.include_router(
         build_download_router(
             manager=manager,

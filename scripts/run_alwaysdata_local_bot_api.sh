@@ -140,6 +140,8 @@ mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 start_bot_api() {
   log "Starting telegram-bot-api at $BOT_API_BASE_URL"
+  # At ERROR verbosity telegram-bot-api enables a 250 ms watchdog. Shared-host
+  # CPU pauses regularly exceed that threshold and make TDLib abort itself.
   "$BOT_API_BIN" \
     --api-id="$TELEGRAM_API_ID" \
     --api-hash="$TELEGRAM_API_HASH" \
@@ -148,7 +150,7 @@ start_bot_api() {
     --http-port="$BOT_API_PORT" \
     --dir="$BOT_API_DIR" \
     --temp-dir="$BOT_API_TEMP_DIR" \
-    --verbosity="${BOT_API_VERBOSITY:-1}" \
+    --verbosity="${BOT_API_VERBOSITY:-0}" \
     >"$BOT_API_LOG_FILE" 2>&1 &
   BOT_API_PID=$!
 }

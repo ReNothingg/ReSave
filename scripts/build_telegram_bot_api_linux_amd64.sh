@@ -8,8 +8,11 @@ IMAGE_NAME="resave-telegram-bot-api-builder:linux-amd64"
 
 mkdir -p "$DIST_DIR" "$BUILD_DIR"
 
-docker build --platform linux/amd64 -t "$IMAGE_NAME" -f - "$ROOT_DIR" <<'DOCKERFILE'
+docker build --platform linux/amd64 --build-arg "BUILD_JOBS=${BUILD_JOBS:-8}" \
+  -t "$IMAGE_NAME" -f - "$ROOT_DIR" <<'DOCKERFILE'
 FROM debian:bookworm
+
+ARG BUILD_JOBS=8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -29,7 +32,7 @@ WORKDIR /src/telegram-bot-api
 RUN cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/out \
-  && cmake --build build --target install -j2
+  && cmake --build build --target install -j"$BUILD_JOBS"
 DOCKERFILE
 
 docker create --platform linux/amd64 --name resave-telegram-bot-api-extract "$IMAGE_NAME" >/dev/null
@@ -43,4 +46,4 @@ file "$DIST_DIR/telegram-bot-api-linux-amd64"
 
 echo
 echo "Built: $DIST_DIR/telegram-bot-api-linux-amd64"
-echo "Upload it to the server as: /home/renothing/.local/bin/telegram-bot-api"
+echo "Upload it to the server as: $HOME/.local/bin/telegram-bot-api"
