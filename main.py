@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import IO
 
@@ -35,7 +36,7 @@ def configure_logging(settings: config.Settings) -> None:
     settings.log_file.parent.mkdir(parents=True, exist_ok=True)
     handlers: list[logging.Handler] = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(settings.log_file, encoding="utf-8"),
+        RotatingFileHandler(settings.log_file, maxBytes=5_000_000, backupCount=2, encoding="utf-8"),
     ]
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
@@ -132,7 +133,7 @@ async def run(settings: config.Settings | None = None) -> None:
     info_service = VideoInfoService(
         settings.cookies_file,
         settings.max_playlist_items,
-        max_concurrent_requests=max(2, settings.max_concurrent_downloads * 2),
+        max_concurrent_requests=1,
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(build_admin_router(settings, stats))
@@ -170,6 +171,7 @@ async def run(settings: config.Settings | None = None) -> None:
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),
+            tasks_concurrency_limit=16,
         )
     finally:
         await manager.stop()

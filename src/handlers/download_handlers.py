@@ -172,6 +172,11 @@ def build_download_router(
             panel("Проверяю ссылку", ["Получаю информацию и доступные форматы."], icon="🔍"),
             parse_mode="HTML",
         )
+        try:
+            url = await info_service.resolve_url(url)
+        except (VideoInfoError, ValueError) as exc:
+            await status.edit_text(user_error(exc), parse_mode="HTML")
+            return
         if is_tiktok_photo_url(url):
             task = DownloadTask(
                 url=url,
@@ -235,6 +240,11 @@ def build_download_router(
 
     async def process_group(message: Message, url: str) -> None:
         assert message.from_user is not None
+        try:
+            url = await info_service.resolve_url(url)
+        except (VideoInfoError, ValueError) as exc:
+            logger.info("Cannot resolve group URL: %s", exc)
+            return
         if is_tiktok_photo_url(url):
             info = {"title": "Фото из TikTok"}
             action = DownloadAction.TIKTOK_PHOTO

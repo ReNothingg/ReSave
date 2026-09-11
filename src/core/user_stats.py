@@ -44,7 +44,7 @@ class UserStatsManager:
             timeout=15,
         )
         self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA journal_mode=DELETE")
         self._connection.execute("PRAGMA busy_timeout=15000")
         self._initialize()
         self._migrate_legacy()

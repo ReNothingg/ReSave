@@ -45,7 +45,7 @@ def media_caption(title: str, url: str, *, kind: str, size_mb: float | None = No
         "subtitles": "📝",
         "tiktok_photo": "🖼️",
     }
-    safe_title = escape(title or "media")
+    safe_title = escape((title or "media")[:400])
     safe_url = escape(url, quote=True)
     lines = [f"{icons.get(kind, '📁')} <b>{safe_title}</b>"]
     if size_mb is not None:
@@ -56,7 +56,11 @@ def media_caption(title: str, url: str, *, kind: str, size_mb: float | None = No
 
 def user_error(exc: BaseException) -> str:
     value = str(exc).lower()
-    if "private" in value:
+    if "worker exited" in value:
+        detail = "Обработка прервана сервером. Попробуйте файл меньшего размера или качество ниже."
+    elif "unexpected response from webpage" in value or "tiktok fallback" in value:
+        detail = "TikTok не отдал данные публикации. Попробуйте полную ссылку на видео."
+    elif "private" in value:
         detail = "Видео приватное или недоступно для аккаунта бота."
     elif "unsupported url" in value or "not a valid url" in value:
         detail = "Эта ссылка не поддерживается. Отправьте прямую ссылку на публикацию."

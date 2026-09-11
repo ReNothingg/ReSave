@@ -91,7 +91,7 @@ def fetch_tiktok_video_info(url: str, *, error: str = "") -> dict[str, Any]:
         raise TikTokFallbackError("Публикация TikTok не содержит видео")
 
     def first(*values: object) -> object | None:
-        return next((value for value in values if value not in {None, ""}), None)
+        return next((value for value in values if value is not None and value != ""), None)
 
     height = first(download_metadata.get("height"), video.get("height"))
     width = first(download_metadata.get("width"), video.get("width"))
@@ -99,7 +99,10 @@ def fetch_tiktok_video_info(url: str, *, error: str = "") -> dict[str, Any]:
     filesize = first(download_metadata.get("size"), video.get("size"))
     extension = str(first(download_metadata.get("extension"), video.get("format"), "mp4"))
     thumbnail = first(video.get("cover"), video.get("originCover"), metadata.get("image"))
-    uploader = first(metadata.get("user"), (metadata.get("author") or {}).get("uniqueId"))
+    author = metadata.get("author")
+    uploader = first(
+        metadata.get("user"), author.get("uniqueId") if isinstance(author, dict) else None
+    )
     title = str(first(metadata.get("desc"), download_metadata.get("title"), f"TikTok {video_id}"))
 
     media_format = {
@@ -156,16 +159,18 @@ def download_tiktok_video(
         text=True,
     )
     deadline = time.monotonic() + timeout
-    while process.poll() is None:
+    while True:
         if cancel_event and cancel_event.is_set():
             _stop_process(process)
             raise TikTokFallbackError("Загрузка отменена пользователем")
         if time.monotonic() >= deadline:
             _stop_process(process)
             raise TikTokFallbackError("TikTok download timeout")
-        time.sleep(0.25)
-
-    stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=0.25)
+            break
+        except subprocess.TimeoutExpired:
+            continue
     if process.returncode != 0:
         details = (stderr or stdout).strip()
         raise TikTokFallbackError(details[-2000:] or "gallery-dl не смог скачать видео TikTok")
@@ -174,7 +179,9 @@ def download_tiktok_video(
         (
             path
             for path in destination.rglob("*")
-            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+            if path.is_file()
+            and path.suffix.lower() in VIDEO_EXTENSIONS
+            and path.stat().st_size > 0
         ),
         key=lambda path: (path.stat().st_size, path.stat().st_mtime),
         reverse=True,

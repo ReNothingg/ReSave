@@ -4,12 +4,19 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
+import aiohttp
 import yt_dlp
 
+from .process_runner import run_isolated
 from .tiktok_fallback import fetch_tiktok_video_info, is_tiktok_url
 
 logger = logging.getLogger(__name__)
+
+
+def _info_job(cookies_file, playlist_limit, url):
+    return VideoInfoService(cookies_file, playlist_limit)._fetch_sync(url)
 
 
 class VideoInfoError(RuntimeError):
@@ -21,11 +28,41 @@ class VideoInfoService:
         self,
         cookies_file: Path,
         playlist_limit: int = 25,
-        max_concurrent_requests: int = 4,
+        max_concurrent_requests: int = 1,
     ):
         self.cookies_file = cookies_file
         self.playlist_limit = playlist_limit
         self._semaphore = asyncio.Semaphore(max_concurrent_requests)
+
+    async def resolve_url(self, url: str) -> str:
+        if not is_tiktok_url(url) or "/video/" in url or "/photo/" in url:
+            return url
+        original = url
+        async with self._semaphore:
+            try:
+                async with asyncio.timeout(15):
+                    async with aiohttp.ClientSession() as session:
+                        for _ in range(5):
+                            parsed = urlsplit(url)
+                            if (
+                                parsed.scheme != "https"
+                                or parsed.username
+                                or parsed.password
+                                or parsed.port not in (None, 443)
+                                or not is_tiktok_url(url)
+                            ):
+                                raise VideoInfoError("Unsafe TikTok redirect")
+                            async with session.get(url, allow_redirects=False) as response:
+                                if response.status not in {301, 302, 303, 307, 308}:
+                                    return url
+                                location = response.headers.get("Location")
+                                if not location:
+                                    return url
+                                url = urljoin(url, location)
+                        raise VideoInfoError("Too many TikTok redirects")
+            except (aiohttp.ClientError, TimeoutError):
+                # Let the extractor try its own networking implementation.
+                return original
 
     def _options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -59,7 +96,12 @@ class VideoInfoService:
 
     async def fetch(self, url: str) -> dict[str, Any]:
         async with self._semaphore:
-            return await asyncio.to_thread(self._fetch_sync, url)
+            try:
+                return await run_isolated(
+                    _info_job, self.cookies_file, self.playlist_limit, url, timeout=90
+                )
+            except Exception as exc:
+                raise VideoInfoError(str(exc)) from exc
 
 
 def collect_resolutions(info: dict[str, Any]) -> list[int]:

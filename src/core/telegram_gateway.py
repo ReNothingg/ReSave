@@ -42,7 +42,13 @@ class TelegramGateway:
         self.cloud_upload_limit = cloud_upload_limit
         self._rich_messages_available: bool | None = None
 
-    async def _retry(self, operation: Callable[[], Awaitable[T]], attempts: int = 3) -> T:
+    async def _retry(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        attempts: int = 3,
+        *,
+        retry_network: bool = False,
+    ) -> T:
         for attempt in range(1, attempts + 1):
             try:
                 return await operation()
@@ -51,7 +57,7 @@ class TelegramGateway:
                     raise
                 await asyncio.sleep(float(exc.retry_after) + 0.25)
             except TelegramNetworkError:
-                if attempt == attempts:
+                if not retry_network or attempt == attempts:
                     raise
                 await asyncio.sleep(min(2 ** (attempt - 1), 5))
         raise RuntimeError("unreachable")
@@ -69,7 +75,11 @@ class TelegramGateway:
 
     @staticmethod
     def _reply(message_id: int | None) -> ReplyParameters | None:
-        return ReplyParameters(message_id=message_id) if message_id else None
+        return (
+            ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
+            if message_id
+            else None
+        )
 
     async def edit_status(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
         try:
@@ -80,7 +90,8 @@ class TelegramGateway:
                     text=text,
                     parse_mode="HTML",
                     **kwargs,
-                )
+                ),
+                retry_network=True,
             )
             return True
         except TelegramBadRequest as exc:
@@ -146,19 +157,9 @@ class TelegramGateway:
 
     @staticmethod
     def _is_transport_error(exc: BaseException) -> bool:
-        value = str(exc).lower()
-        return any(
-            marker in value
-            for marker in (
-                "clientdecodeerror",
-                "failed to decode object",
-                "connection reset",
-                "server disconnected",
-                "request timeout",
-                "timeout error",
-                "invalid file http url",
-            )
-        )
+        # A lost response does not mean Telegram failed to send the file.
+        # Only an explicit rejection is safe to retry via another transport.
+        return isinstance(exc, TelegramBadRequest) and "invalid file http url" in str(exc).lower()
 
     async def _upload_with_fallback(
         self,

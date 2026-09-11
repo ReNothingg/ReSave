@@ -37,9 +37,9 @@ def download_tiktok_photos(url: str, output_dir: str | Path) -> list[Path]:
     files = sorted(
         path
         for path in destination.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS and path.stat().st_size > 0
     )
-    if files:
+    if result.returncode == 0 and files:
         return files
 
     details = (result.stderr or result.stdout).strip()

@@ -177,4 +177,4 @@ def test_tiktok_fallback_download_skips_broken_yt_dlp(tmp_path, monkeypatch):
         lambda task, variant: (_ for _ in ()).throw(AssertionError("yt-dlp must be skipped")),
     )
 
-    assert asyncio.run(downloader.download(task, tmp_path)) == output
+    assert asyncio.run(downloader._download_in_worker(task, tmp_path)) == output

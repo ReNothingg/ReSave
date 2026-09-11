@@ -14,6 +14,7 @@ from ..utils.file_utils import sanitize_filename
 from ..utils.presentation import media_caption, panel
 from .media_downloader import DownloadCancelled, FileTooLarge, MediaDownloader
 from .models import DownloadAction, DownloadTask, TaskStatus
+from .process_runner import run_isolated
 from .telegram_gateway import TelegramGateway
 from .tiktok_photo_handler import download_tiktok_photos
 from .user_stats import UserStatsManager
@@ -38,7 +39,6 @@ class MediaPipeline:
         work_dir = self.settings.temp_dir / f"task_{task.task_id}"
         work_dir.mkdir(parents=True, exist_ok=False)
         task.work_dir = str(work_dir)
-        cleanup = True
         try:
             if task.action == DownloadAction.SUBTITLES:
                 await self._subtitles(task, work_dir)
@@ -48,14 +48,8 @@ class MediaPipeline:
                 await self._tiktok_photos(task, work_dir)
             else:
                 await self._video_or_audio(task, work_dir)
-        except asyncio.CancelledError:
-            # A cancelled to_thread call can still be using this directory.
-            # Startup cleanup will remove it safely on the next launch.
-            cleanup = False
-            raise
         finally:
-            if cleanup:
-                await asyncio.to_thread(shutil.rmtree, work_dir, True)
+            await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
     async def update_progress(self, task: DownloadTask) -> None:
         if task.silent or task.status not in {
@@ -200,7 +194,15 @@ class MediaPipeline:
 
     async def _tiktok_photos(self, task: DownloadTask, work_dir: Path) -> None:
         await self._set_phase(task, TaskStatus.DOWNLOADING, "Скачивание фото TikTok")
-        photos = await asyncio.to_thread(download_tiktok_photos, task.url, work_dir)
+        photos = await run_isolated(
+            download_tiktok_photos,
+            task.url,
+            work_dir,
+            timeout=120,
+            cancel_event=task.cancel_event,
+            work_dir=work_dir,
+            max_bytes=self.settings.effective_upload_limit,
+        )
         if task.cancel_event.is_set():
             raise DownloadCancelled("Загрузка отменена пользователем")
         await self._set_phase(task, TaskStatus.UPLOADING, "Отправка фото")
@@ -268,6 +270,10 @@ class MediaPipeline:
             "-hide_banner",
             "-loglevel",
             "error",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
             "-i",
             str(source),
             "-t",
