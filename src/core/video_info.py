@@ -7,6 +7,8 @@ from typing import Any
 
 import yt_dlp
 
+from .tiktok_fallback import fetch_tiktok_video_info, is_tiktok_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,11 @@ class VideoInfoService:
             with yt_dlp.YoutubeDL(self._options()) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
+            if is_tiktok_url(url):
+                try:
+                    return fetch_tiktok_video_info(url, error=str(exc))
+                except Exception as fallback_exc:
+                    raise VideoInfoError(f"{exc}; TikTok fallback: {fallback_exc}") from exc
             raise VideoInfoError(str(exc)) from exc
         if not info:
             raise VideoInfoError("Источник не вернул информацию о медиа")
@@ -73,6 +80,8 @@ def compact_media_info(info: dict[str, Any]) -> dict[str, Any]:
     compact["thumbnail"] = bool(info.get("thumbnail"))
     compact["subtitles"] = bool(info.get("subtitles"))
     compact["automatic_captions"] = bool(info.get("automatic_captions"))
+    if info.get("_tiktok_fallback"):
+        compact["_tiktok_fallback"] = True
     compact["formats"] = [
         {
             "height": item.get("height"),

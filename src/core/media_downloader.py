@@ -19,6 +19,13 @@ from yt_dlp.utils import determine_ext
 from config import Settings
 
 from .models import DownloadAction, DownloadTask, DownloadVariant
+from .tiktok_fallback import (
+    canonical_tiktok_url,
+    download_tiktok_video,
+    fetch_tiktok_video_info,
+    is_tiktok_url,
+    tiktok_video_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,9 +294,59 @@ class MediaDownloader:
             )
         return result
 
+    def _download_tiktok_sync(self, task: DownloadTask, work_dir: Path) -> Path:
+        source = download_tiktok_video(
+            task.url,
+            work_dir,
+            known_id=task.info.get("id"),
+            cancel_event=task.cancel_event,
+            timeout=self.settings.download_timeout_seconds,
+        )
+        if task.action != DownloadAction.AUDIO:
+            return source
+
+        ffmpeg = _media_tool("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("FFmpeg is required to extract TikTok audio")
+        target = work_dir / "media.mp3"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-vn",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                "-y",
+                str(target),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=min(self.settings.download_timeout_seconds, 300),
+        )
+        source.unlink(missing_ok=True)
+        return target
+
     async def download(self, task: DownloadTask, work_dir: Path) -> Path:
         task.work_dir = str(work_dir)
+        if task.info.get("_tiktok_fallback"):
+            logger.info("Using gallery-dl TikTok fallback task=%s", task.task_id)
+            result = await asyncio.to_thread(self._download_tiktok_sync, task, work_dir)
+            if result.stat().st_size > self.settings.effective_upload_limit:
+                raise FileTooLarge(
+                    f"File size {result.stat().st_size} exceeds Telegram limit "
+                    f"{self.settings.effective_upload_limit}"
+                )
+            task.progress = 1.0
+            return result
+
         errors: list[str] = []
+        tiktok_fallback_attempted = False
         for variant in self.variants(task, work_dir / "media"):
             if task.cancel_event.is_set():
                 raise DownloadCancelled("Загрузка отменена пользователем")
@@ -309,6 +366,29 @@ class MediaDownloader:
             except DownloadCancelled:
                 raise
             except Exception as exc:
+                if (
+                    not tiktok_fallback_attempted
+                    and is_tiktok_url(task.url)
+                    and tiktok_video_id(task.url, str(exc), task.info.get("id"))
+                ):
+                    tiktok_fallback_attempted = True
+                    logger.info("yt-dlp rejected TikTok; using gallery-dl task=%s", task.task_id)
+                    try:
+                        result = await asyncio.to_thread(self._download_tiktok_sync, task, work_dir)
+                        if result.stat().st_size > self.settings.effective_upload_limit:
+                            raise FileTooLarge(
+                                f"File size {result.stat().st_size} exceeds Telegram limit "
+                                f"{self.settings.effective_upload_limit}"
+                            )
+                        task.progress = 1.0
+                        return result
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "TikTok fallback failed task=%s: %s",
+                            task.task_id,
+                            fallback_exc,
+                        )
+                        errors.append(f"TikTok fallback: {fallback_exc}")
                 errors.append(f"{variant.label}: {exc}")
                 logger.warning("Variant failed task=%s: %s", task.task_id, errors[-1])
                 if not self._can_fallback(exc):
@@ -402,10 +482,39 @@ class MediaDownloader:
 
         return max(downloaded, key=quality_rank)[0]
 
+    def _download_tiktok_thumbnail_sync(self, task: DownloadTask, work_dir: Path) -> Path:
+        video_id = tiktok_video_id(task.url, known_id=task.info.get("id"))
+        if not video_id:
+            raise FileNotFoundError("Не удалось определить ID видео TikTok")
+        info = fetch_tiktok_video_info(canonical_tiktok_url(video_id))
+        url = info.get("thumbnail")
+        if not url:
+            raise FileNotFoundError("Превью TikTok недоступно")
+
+        extension = determine_ext(str(url), "jpg").lower()
+        if extension not in {"avif", "jpeg", "jpg", "png", "webp"}:
+            extension = "jpg"
+        path = work_dir / f"thumbnail.{extension}"
+        with yt_dlp.YoutubeDL(self._common_options()) as ydl:
+            response = ydl.urlopen(Request(str(url)))
+            try:
+                with path.open("wb") as output:
+                    shutil.copyfileobj(response, output)
+            finally:
+                response.close()
+        return path
+
     async def download_thumbnail(self, task: DownloadTask, work_dir: Path) -> Path:
         task.work_dir = str(work_dir)
         task.phase = "Скачивание превью"
-        return await asyncio.to_thread(self._download_thumbnail_sync, task, work_dir)
+        if task.info.get("_tiktok_fallback"):
+            return await asyncio.to_thread(self._download_tiktok_thumbnail_sync, task, work_dir)
+        try:
+            return await asyncio.to_thread(self._download_thumbnail_sync, task, work_dir)
+        except Exception as exc:
+            if is_tiktok_url(task.url) and tiktok_video_id(task.url, str(exc), task.info.get("id")):
+                return await asyncio.to_thread(self._download_tiktok_thumbnail_sync, task, work_dir)
+            raise
 
     @staticmethod
     def _can_fallback(exc: BaseException) -> bool:

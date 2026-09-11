@@ -1,3 +1,6 @@
+import asyncio
+import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -5,6 +8,7 @@ import config
 from src.core import media_downloader
 from src.core.media_downloader import MediaDownloader
 from src.core.models import DownloadAction, DownloadTask
+from src.core.tiktok_fallback import fetch_tiktok_video_info, tiktok_video_id
 from src.handlers.command_handlers import _main_keyboard
 from src.handlers.download_handlers import _keyboard
 from src.utils.presentation import panel, rich_panel, user_error
@@ -102,3 +106,75 @@ def test_keyboards_use_native_button_styles():
     assert styles["🎬 Лучшее"] == "success"
     assert styles["✕ Отмена"] == "danger"
     assert menu_styles["📊 Моя статистика"] == "success"
+
+
+def test_tiktok_id_is_recovered_from_yt_dlp_error():
+    assert (
+        tiktok_video_id(
+            "https://vt.tiktok.com/short/",
+            "ERROR: [TikTok] 7546669352666385682: Unexpected response",
+        )
+        == "7546669352666385682"
+    )
+
+
+def test_tiktok_gallery_metadata_is_normalized(monkeypatch):
+    payload = [
+        [
+            2,
+            {
+                "id": "7546669352666385682",
+                "desc": "Pixel comparison",
+                "user": "creator",
+                "post_type": "video",
+                "video": {
+                    "height": 360,
+                    "width": 714,
+                    "duration": 33,
+                    "size": "1266778",
+                    "format": "mp4",
+                    "codecType": "h264",
+                    "cover": "https://cdn.example/cover.jpg",
+                },
+            },
+        ],
+        [3, "https://cdn.example/video.mp4", {"extension": "mp4", "height": 360}],
+    ]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout=json.dumps(payload), stderr=""
+        ),
+    )
+
+    info = fetch_tiktok_video_info("https://www.tiktok.com/@user/video/7546669352666385682")
+
+    assert info["_tiktok_fallback"] is True
+    assert info["title"] == "Pixel comparison"
+    assert info["uploader"] == "creator"
+    assert info["formats"][0]["height"] == 360
+    assert info["formats"][0]["filesize"] == 1266778
+
+
+def test_tiktok_fallback_download_skips_broken_yt_dlp(tmp_path, monkeypatch):
+    task = DownloadTask(
+        url="https://vt.tiktok.com/short/",
+        chat_id=1,
+        user_id=1,
+        status_message_id=1,
+        reply_to_message_id=None,
+        info={"id": "7546669352666385682", "_tiktok_fallback": True},
+        action=DownloadAction.BEST,
+    )
+    output = tmp_path / "media.mp4"
+    output.write_bytes(b"tiktok-video")
+    downloader = MediaDownloader(_settings(tmp_path))
+    monkeypatch.setattr(downloader, "_download_tiktok_sync", lambda task, work_dir: output)
+    monkeypatch.setattr(
+        downloader,
+        "_download_sync",
+        lambda task, variant: (_ for _ in ()).throw(AssertionError("yt-dlp must be skipped")),
+    )
+
+    assert asyncio.run(downloader.download(task, tmp_path)) == output
