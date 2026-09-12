@@ -145,19 +145,7 @@ class DownloadManager:
                 task.status = TaskStatus.DOWNLOADING
                 task.phase = "Подготовка загрузки"
                 task.started_at = time.time()
-                operation = asyncio.create_task(self.processor(task))
-                try:
-                    while not operation.done():
-                        if task.cancel_event.is_set():
-                            operation.cancel()
-                            await asyncio.gather(operation, return_exceptions=True)
-                            raise DownloadCancelled("Загрузка отменена")
-                        await asyncio.wait({operation}, timeout=0.2)
-                    await operation
-                finally:
-                    if not operation.done():
-                        operation.cancel()
-                        await asyncio.gather(operation, return_exceptions=True)
+                await self.processor(task)
                 if task.cancel_event.is_set():
                     raise DownloadCancelled("Загрузка отменена пользователем")
                 task.status = TaskStatus.COMPLETED

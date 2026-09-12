@@ -96,7 +96,7 @@ cp .env.example .env
 | `MAX_FILE_SIZE` | лимит Bot API | максимальный размер скачиваемого файла |
 | `SEND_AS_DOC_LIMIT` | лимит Bot API | порог отправки медиа как документа |
 | `SELECTION_TTL_SECONDS` | `900` | срок действия кнопок выбора формата |
-| `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | общий дедлайн отдельного процесса |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | общий дедлайн загрузки по progress hook |
 | `DOWNLOAD_STALL_TIMEOUT_SECONDS` | `180` | допустимое время без прогресса |
 | `DOWNLOAD_RATE_LIMIT_BYTES` | `0` | ограничение скорости; `0` — без ограничения |
 | `PROGRESS_UPDATE_SECONDS` | `3` | частота обновления прогресса |

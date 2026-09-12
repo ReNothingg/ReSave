@@ -8,7 +8,6 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import fields
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,6 @@ from yt_dlp.utils import determine_ext
 from config import Settings
 
 from .models import DownloadAction, DownloadTask, DownloadVariant
-from .process_runner import report_progress, run_isolated
 from .tiktok_fallback import (
     canonical_tiktok_url,
     download_tiktok_video,
@@ -30,12 +28,6 @@ from .tiktok_fallback import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _media_job(settings, payload, work_dir, operation):
-    task = DownloadTask(**payload)
-    downloader = MediaDownloader(settings)
-    return asyncio.run(getattr(downloader, operation)(task, work_dir))
 
 
 @lru_cache(maxsize=2)
@@ -270,14 +262,6 @@ class MediaDownloader:
 
             if now - last_activity >= self.settings.download_stall_timeout_seconds:
                 raise TimeoutError("Download made no progress")
-            report_progress(
-                {
-                    "progress": task.progress,
-                    "phase": task.phase,
-                    "speed": task.speed,
-                    "eta": task.eta,
-                }
-            )
 
         return hook
 
@@ -348,36 +332,7 @@ class MediaDownloader:
         source.unlink(missing_ok=True)
         return target
 
-    async def _isolated(self, task, work_dir, operation):
-        payload = {
-            field.name: getattr(task, field.name)
-            for field in fields(task)
-            if field.name != "cancel_event"
-        }
-        task.phase = "Скачивание и обработка"
-
-        def update_progress(values):
-            for key in ("progress", "phase", "speed", "eta"):
-                if key in values:
-                    setattr(task, key, values[key])
-
-        return await run_isolated(
-            _media_job,
-            self.settings,
-            payload,
-            work_dir,
-            operation,
-            timeout=self.settings.download_timeout_seconds,
-            cancel_event=task.cancel_event,
-            work_dir=work_dir,
-            max_bytes=self.settings.effective_upload_limit,
-            on_progress=update_progress,
-        )
-
     async def download(self, task: DownloadTask, work_dir: Path) -> Path:
-        return await self._isolated(task, work_dir, "_download_in_worker")
-
-    async def _download_in_worker(self, task: DownloadTask, work_dir: Path) -> Path:
         task.work_dir = str(work_dir)
         if task.info.get("_tiktok_fallback"):
             logger.info("Using gallery-dl TikTok fallback task=%s", task.task_id)
@@ -465,9 +420,6 @@ class MediaDownloader:
         return sorted(path for path in work_dir.glob("*.srt") if path.is_file())
 
     async def download_subtitles(self, task: DownloadTask, work_dir: Path) -> list[Path]:
-        return await self._isolated(task, work_dir, "_subtitles_in_worker")
-
-    async def _subtitles_in_worker(self, task: DownloadTask, work_dir: Path) -> list[Path]:
         task.work_dir = str(work_dir)
         task.phase = "Скачивание субтитров"
         files = await asyncio.to_thread(self._download_subtitles_sync, task, work_dir)
@@ -558,9 +510,6 @@ class MediaDownloader:
         return path
 
     async def download_thumbnail(self, task: DownloadTask, work_dir: Path) -> Path:
-        return await self._isolated(task, work_dir, "_thumbnail_in_worker")
-
-    async def _thumbnail_in_worker(self, task: DownloadTask, work_dir: Path) -> Path:
         task.work_dir = str(work_dir)
         task.phase = "Скачивание превью"
         if task.info.get("_tiktok_fallback"):

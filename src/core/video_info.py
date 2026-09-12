@@ -9,14 +9,9 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 import yt_dlp
 
-from .process_runner import run_isolated
 from .tiktok_fallback import fetch_tiktok_video_info, is_tiktok_url
 
 logger = logging.getLogger(__name__)
-
-
-def _info_job(cookies_file, playlist_limit, url):
-    return VideoInfoService(cookies_file, playlist_limit)._fetch_sync(url)
 
 
 class VideoInfoError(RuntimeError):
@@ -96,12 +91,7 @@ class VideoInfoService:
 
     async def fetch(self, url: str) -> dict[str, Any]:
         async with self._semaphore:
-            try:
-                return await run_isolated(
-                    _info_job, self.cookies_file, self.playlist_limit, url, timeout=90
-                )
-            except Exception as exc:
-                raise VideoInfoError(str(exc)) from exc
+            return await asyncio.to_thread(self._fetch_sync, url)
 
 
 def collect_resolutions(info: dict[str, Any]) -> list[int]:
