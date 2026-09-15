@@ -5,7 +5,7 @@ import secrets
 import time
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,14 +13,17 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from config import Settings
 
+from ..core.broadcast import Campaign, deliver_campaign
 from ..core.telegram_gateway import TelegramGateway
 from ..core.user_stats import UserStatsManager
-from ..utils.presentation import MessageContent, clip, panel
+from ..utils.presentation import MessageContent, panel
 from ..utils.theme import button
+from .broadcast_views import draft_controls, notice, report_card, report_controls
 
 
 class AdminStates(StatesGroup):
     message = State()
+    preparing = State()
     broadcast_confirmation = State()
     reset_confirmation = State()
 
@@ -59,7 +62,7 @@ class AdminHandlers:
         self.settings = settings
         self.stats = stats
         self.telegram = telegram
-        self.running: tuple[int, str, asyncio.Event] | None = None
+        self.running: Campaign | None = None
 
     def router(self) -> Router:
         router = Router(name="admin")
@@ -76,11 +79,16 @@ class AdminHandlers:
             Command("cancel"),
             StateFilter(
                 AdminStates.message,
+                AdminStates.preparing,
                 AdminStates.broadcast_confirmation,
                 AdminStates.reset_confirmation,
             ),
         )
-        router.message.register(self.receive, AdminStates.message, ~F.text.startswith("/"))
+        router.message.register(
+            self.receive,
+            StateFilter(AdminStates.message, AdminStates.broadcast_confirmation),
+            ~F.text.startswith("/"),
+        )
         router.callback_query.register(self.navigate, F.data.startswith("admin:"))
         router.callback_query.register(self.broadcast, F.data.startswith("broadcast:"))
         return router
@@ -114,18 +122,24 @@ class AdminHandlers:
     async def begin(self, message: Message, state: FSMContext) -> None:
         if self.running:
             await self.telegram.send_message(
-                message.chat.id, "Рассылка уже идёт. Дождитесь завершения."
+                message.chat.id,
+                report_card(self.running),
+                reply_markup=report_controls(self.running)
+                if state.key.user_id == self.running.owner_id
+                else back_keyboard(),
             )
             return
         await state.clear()
+        await state.set_data({"compose_token": secrets.token_urlsafe(6)})
         await state.set_state(AdminStates.message)
         await self.telegram.send_message(
             message.chat.id,
-            panel(
-                "Рассылка",
+            notice(
+                "Новая рассылка",
                 [
-                    "Пришлите одно сообщение: текст, фото, видео, аудио или файл.",
-                    "/cancel — отменить",
+                    "Пришлите готовый пост: текст или один файл с подписью.",
+                    "Покажу, как его увидят пользователи. После этого можно изменить пост или отправить.",
+                    "Форматирование и медиа сохранятся. /cancel — выйти.",
                 ],
             ),
             reply_markup=back_keyboard(),
@@ -134,10 +148,12 @@ class AdminHandlers:
     async def cancel(self, message: Message, state: FSMContext) -> None:
         await state.clear()
         await self.telegram.send_message(
-            message.chat.id, "Действие отменено.", reply_markup=admin_keyboard()
+            message.chat.id,
+            notice("Черновик отменён", ["Никому ничего не отправлено."]),
+            reply_markup=back_keyboard(),
         )
 
-    async def receive(self, message: Message, state: FSMContext) -> None:
+    async def receive(self, message: Message, state: FSMContext, bot: Bot) -> None:
         if message.media_group_id or not any(
             (
                 message.text,
@@ -146,42 +162,87 @@ class AdminHandlers:
                 message.audio,
                 message.document,
                 message.animation,
+                message.voice,
+                message.video_note,
+                message.sticker,
+                getattr(message, "rich_message", None),
             )
         ):
             await self.telegram.send_message(
-                message.chat.id, "Пришлите одно сообщение без альбома."
+                message.chat.id,
+                notice(
+                    "Не удалось подготовить пост",
+                    ["Пришлите текст или один файл. Альбомы пока не поддерживаются."],
+                ),
             )
             return
+        if self.running:
+            await self.telegram.send_message(message.chat.id, report_card(self.running))
+            return
+        original = await state.get_data()
+        compose_token = original.get("compose_token")
+        await state.set_state(AdminStates.preparing)
+        try:
+            preview = await bot.copy_message(
+                message.chat.id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[]),
+                request_timeout=30,
+            )
+        except (TelegramAPIError, TimeoutError):
+            if (await state.get_data()).get("compose_token") == compose_token:
+                await state.set_state(AdminStates.message)
+                await self.telegram.send_message(
+                    message.chat.id,
+                    notice(
+                        "Предпросмотр не готов",
+                        [
+                            "Не удалось скопировать пост. Пришлите его ещё раз; рассылка не запущена."
+                        ],
+                    ),
+                )
+            return
+        if await state.get_state() != AdminStates.preparing.state:
+            return
+        if (await state.get_data()).get("compose_token") != compose_token:
+            return
+        recipients = list(await asyncio.to_thread(self.stats.get_all_stats))
+        if (await state.get_data()).get("compose_token") != compose_token:
+            return
         token = secrets.token_urlsafe(6)
-        items = await asyncio.to_thread(self.stats.get_all_stats)
+        control = await self.telegram.send_message(
+            message.chat.id,
+            notice(
+                "Пост готов к отправке",
+                [
+                    "Выше — точная копия сообщения для пользователей.",
+                    f"Получателей: {len(recipients)}. Список зафиксирован для этой рассылки.",
+                    "Служебные кнопки и этот экран пользователям не отправляются.",
+                ],
+            ),
+            reply_markup=draft_controls(token, len(recipients)),
+        )
+        if (await state.get_data()).get("compose_token") != compose_token:
+            await self.telegram.edit_status(
+                control.chat.id,
+                control.message_id,
+                notice("Черновик отменён", ["Никому ничего не отправлено."]),
+                reply_markup=None,
+            )
+            return
         await state.set_data(
             {
+                "compose_token": compose_token,
                 "token": token,
-                "source": message.message_id,
+                "source": preview.message_id,
                 "chat": message.chat.id,
+                "control": control.message_id,
+                "recipients": recipients,
                 "expires": time.monotonic() + 600,
             }
         )
         await state.set_state(AdminStates.broadcast_confirmation)
-        await self.telegram.send_message(
-            message.chat.id,
-            panel(
-                "Отправить рассылку?",
-                [
-                    clip(message.text or message.caption or "Сообщение с файлом", 240),
-                    "",
-                    f"Получателей сейчас: {len(items)}",
-                ],
-            ),
-            reply_markup=keyboard(
-                [
-                    [
-                        ("Отправить", f"broadcast:confirm:{token}"),
-                        ("Отмена", f"broadcast:cancel:{token}"),
-                    ]
-                ]
-            ),
-        )
 
     async def navigate(self, call: CallbackQuery, state: FSMContext) -> None:
         if not isinstance(call.message, Message):
@@ -271,104 +332,88 @@ class AdminHandlers:
         parts = (call.data or "").split(":")
         if len(parts) != 3:
             await self.telegram.answer_callback(
-                call, "Подтверждение устарело. Откройте /broadcast."
+                call, "Откройте /broadcast, чтобы подготовить новый пост."
             )
             return
         _, action, token = parts
         if action == "stop":
-            if self.running and self.running[:2] == (call.from_user.id, token):
-                self.running[2].set()
-                await self.telegram.answer_callback(call, "Остановлю после текущего сообщения.")
-            else:
-                await self.telegram.answer_callback(call, "Рассылка уже завершена.")
+            await self.stop_campaign(call, token)
             return
         data = await state.get_data()
+        if not await self.valid_draft(call, state, data, token):
+            return
+        if action in {"cancel", "edit"}:
+            await self.telegram.answer_callback(call)
+            await state.clear()
+            await self.telegram.edit_status(
+                call.message.chat.id,
+                call.message.message_id,
+                notice("Черновик снят с отправки", ["Никому ничего не отправлено."]),
+                reply_markup=back_keyboard() if action == "cancel" else None,
+            )
+            if action == "edit":
+                await self.begin(call.message, state)
+            return
+        if action != "confirm":
+            await self.telegram.answer_callback(call, "Действие недоступно.")
+            return
+        await self.start_campaign(call, state, bot, data, token)
+
+    async def valid_draft(
+        self, call: CallbackQuery, state: FSMContext, data: dict, token: str
+    ) -> bool:
         current = await state.get_state()
         if (
             current != AdminStates.broadcast_confirmation.state
             or token != data.get("token")
             or data.get("expires", 0) <= time.monotonic()
+            or data.get("control") != call.message.message_id
         ):
-            await self.telegram.answer_callback(
-                call, "Подтверждение устарело. Откройте /broadcast."
-            )
-            return
-        if action == "cancel":
-            await state.clear()
-            await self.telegram.answer_callback(call, "Отменено")
-            await self.telegram.edit_status(
-                call.message.chat.id,
-                call.message.message_id,
-                "Рассылка отменена.",
-                reply_markup=admin_keyboard(),
-            )
-            return
-        if action != "confirm" or self.running is not None:
+            await self.telegram.answer_callback(call, "Этот черновик устарел. Откройте /broadcast.")
+            return False
+        return True
+
+    async def start_campaign(
+        self, call: CallbackQuery, state: FSMContext, bot: Bot, data: dict, token: str
+    ) -> None:
+        if self.running:
             await self.telegram.answer_callback(call, "Рассылка уже идёт.")
             return
-        stop = asyncio.Event()
-        self.running = (call.from_user.id, token, stop)
+        if not data["recipients"]:
+            await self.telegram.answer_callback(call, "В базе пока нет получателей.")
+            return
+        campaign = Campaign(
+            owner_id=call.from_user.id,
+            token=token,
+            chat_id=data["chat"],
+            source_id=data["source"],
+            control_id=data["control"],
+            recipients=tuple(data["recipients"]),
+        )
+        self.running = campaign
         try:
             await state.clear()
-            await self.telegram.answer_callback(call)
-            await self.deliver(call, bot, data, token, stop)
+            await self.telegram.answer_callback(call, "Отправляю")
+            await deliver_campaign(bot, campaign, self.report)
         finally:
             self.running = None
 
-    async def deliver(
-        self, call: CallbackQuery, bot: Bot, data: dict, token: str, stop: asyncio.Event
-    ) -> None:
-        recipients = await asyncio.to_thread(self.stats.get_all_stats)
-        sent = failed = 0
-        for user_id in recipients:
-            if stop.is_set():
-                break
-            if (sent + failed) % 20 == 0:
-                await self.telegram.edit_status(
-                    call.message.chat.id,
-                    call.message.message_id,
-                    panel(
-                        "Рассылка",
-                        [f"Отправлено: {sent} из {len(recipients)}", f"Не доставлено: {failed}"],
-                    ),
-                    reply_markup=keyboard([[("Остановить", f"broadcast:stop:{token}")]]),
-                )
-            delivered = await self.copy(bot, user_id, data, stop)
-            if delivered is None:
-                break
-            sent += int(delivered)
-            failed += int(not delivered)
-            await asyncio.sleep(0.05)
-        title = "Рассылка остановлена" if stop.is_set() else "Рассылка завершена"
-        await self.telegram.edit_status(
-            call.message.chat.id,
-            call.message.message_id,
-            panel(title, [f"Отправлено: {sent}", f"Не доставлено: {failed}"]),
-            reply_markup=admin_keyboard(),
-        )
+    async def stop_campaign(self, call: CallbackQuery, token: str) -> None:
+        campaign = self.running
+        if not campaign or (campaign.owner_id, campaign.token) != (call.from_user.id, token):
+            await self.telegram.answer_callback(call, "Рассылка уже завершена.")
+            return
+        campaign.stop.set()
+        await self.telegram.answer_callback(call, "Остановлю после текущего сообщения.")
+        await self.report(campaign)
 
-    @staticmethod
-    async def copy(bot: Bot, user_id: int, data: dict, stop: asyncio.Event) -> bool | None:
-        for attempt in range(3):
-            try:
-                await bot.copy_message(
-                    user_id,
-                    from_chat_id=data["chat"],
-                    message_id=data["source"],
-                    request_timeout=30,
-                )
-                return True
-            except TelegramRetryAfter as exc:
-                if attempt == 2:
-                    return False
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=float(exc.retry_after) + 0.25)
-                    return None
-                except TimeoutError:
-                    continue
-            except (TelegramAPIError, TimeoutError):
-                return False
-        return False
+    async def report(self, campaign: Campaign) -> None:
+        await self.telegram.edit_status(
+            campaign.chat_id,
+            campaign.control_id,
+            report_card(campaign),
+            reply_markup=report_controls(campaign),
+        )
 
 
 def build_admin_router(
