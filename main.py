@@ -126,6 +126,8 @@ async def run(settings: config.Settings | None = None) -> None:
             local_api=settings.bot_api_is_local,
             use_file_uri=settings.bot_api_use_file_uri,
             cloud_upload_limit=config.CLOUD_BOT_API_UPLOAD_LIMIT,
+            rich_messages=settings.rich_messages_enabled,
+            custom_emoji=settings.custom_emoji_enabled,
         )
         downloader = MediaDownloader(settings)
         pipeline = MediaPipeline(settings, downloader, telegram, stats)

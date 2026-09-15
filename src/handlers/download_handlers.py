@@ -91,7 +91,8 @@ class DownloadHandlers:
 
     async def process_private(self, message: Message, url: str) -> None:
         assert message.from_user is not None
-        status = await message.reply(
+        status = await self.telegram.reply(
+            message,
             panel("Проверяю ссылку…"),
             parse_mode="HTML",
         )
@@ -121,12 +122,19 @@ class DownloadHandlers:
             )
             try:
                 position = await self.manager.enqueue(task)
-                await status.edit_text(
+                await self.telegram.edit_status(
+                    status.chat.id,
+                    status.message_id,
                     panel("В очереди", [f"Место в очереди: {position}."]),
                     parse_mode="HTML",
                 )
             except (QueueCapacityError, UserTaskLimitError) as exc:
-                await status.edit_text(panel("Очередь занята", [str(exc)]), parse_mode="HTML")
+                await self.telegram.edit_status(
+                    status.chat.id,
+                    status.message_id,
+                    panel("Очередь занята", [str(exc)]),
+                    parse_mode="HTML",
+                )
             return
 
         info = await self.info_service.fetch(url)
@@ -150,7 +158,9 @@ class DownloadHandlers:
             if discovered >= self.settings.max_playlist_items:
                 lines.append(f"Лимит плейлиста: {self.settings.max_playlist_items}")
             title = "Добавлено из плейлиста" if count else "Плейлист не добавлен"
-            await status.edit_text(panel(title, lines), parse_mode="HTML")
+            await self.telegram.edit_status(
+                status.chat.id, status.message_id, panel(title, lines), parse_mode="HTML"
+            )
             return
 
         info = compact_media_info(info)
@@ -163,8 +173,14 @@ class DownloadHandlers:
             info=info,
             resolutions=resolutions,
         )
-        await status.edit_text(
-            media_text(info),
+        await self.telegram.edit_status(
+            status.chat.id,
+            status.message_id,
+            media_text(
+                info,
+                upload_limit=self.settings.effective_upload_limit,
+                ffmpeg_available=self.ffmpeg_available,
+            ),
             parse_mode="HTML",
             reply_markup=media_keyboard(
                 selection.token,
@@ -236,11 +252,13 @@ class DownloadHandlers:
         url = extract_url(text, message.entities, message.caption_entities)
         if not url:
             if message.chat.type == "private":
-                await message.reply("Пришлите ссылку на видео или публикацию.")
+                await self.telegram.reply(message, "Пришлите ссылку на видео или публикацию.")
             return
         if not self.selections.begin_request(message.from_user.id, message.chat.id):
             if message.chat.type == "private":
-                await message.reply("Проверка ссылок занята. Попробуйте через минуту.")
+                await self.telegram.reply(
+                    message, "Проверка ссылок занята. Попробуйте через минуту."
+                )
             return
         try:
             await self._process_url(message, url)
@@ -250,7 +268,8 @@ class DownloadHandlers:
     async def _process_url(self, message: Message, url: str) -> None:
         if not await is_public_url_target(url):
             if message.chat.type not in {"group", "supergroup"}:
-                await message.reply(
+                await self.telegram.reply(
+                    message,
                     panel(
                         "Ссылка отклонена",
                         ["Не могу открыть этот адрес. Пришлите ссылку на публикацию."],

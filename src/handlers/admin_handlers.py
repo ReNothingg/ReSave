@@ -9,13 +9,14 @@ from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from config import Settings
 
 from ..core.telegram_gateway import TelegramGateway
 from ..core.user_stats import UserStatsManager
-from ..utils.presentation import clip, panel
+from ..utils.presentation import MessageContent, clip, panel
+from ..utils.theme import button
 
 
 class AdminStates(StatesGroup):
@@ -26,11 +27,17 @@ class AdminStates(StatesGroup):
 
 def keyboard(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
-            for row in rows
-        ]
+        inline_keyboard=[[admin_button(label, data) for label, data in row] for row in rows]
     )
+
+
+def admin_button(label: str, data: str):
+    action = data.split(":")[1]
+    style = "danger" if action in {"clear", "clear-confirm", "cancel", "stop"} else "primary"
+    if action == "confirm":
+        style = "success"
+    icons = {"stats": "stats", "broadcast": "subtitle", "users": "downloads", "confirm": "done"}
+    return button(label, icon=icons.get(action), style=style, callback_data=data)
 
 
 def admin_keyboard() -> InlineKeyboardMarkup:
@@ -78,7 +85,7 @@ class AdminHandlers:
         router.callback_query.register(self.broadcast, F.data.startswith("broadcast:"))
         return router
 
-    async def stats_text(self) -> str:
+    async def stats_text(self) -> MessageContent:
         items = await asyncio.to_thread(self.stats.get_all_stats)
         values = list(items.values())
         return panel(
@@ -89,6 +96,8 @@ class AdminHandlers:
                 f"Объём: {sum(item.total_size_mb for item in values):.1f} МБ",
                 f"Неудачных загрузок: {sum(item.failed_downloads for item in values)}",
             ],
+            icon="stats",
+            table=True,
         )
 
     async def open(self, message: Message, state: FSMContext) -> None:

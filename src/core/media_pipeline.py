@@ -10,8 +10,9 @@ from aiogram.exceptions import TelegramBadRequest
 
 from config import Settings
 
+from ..utils.cards import progress_card
 from ..utils.file_utils import sanitize_filename
-from ..utils.presentation import media_caption, panel
+from ..utils.presentation import media_caption
 from .errors import DownloadCancelled, FileTooLarge
 from .ffmpeg_tools import convert_gif, positive_seconds, probe_video
 from .media_downloader import MediaDownloader
@@ -64,20 +65,10 @@ class MediaPipeline:
             TaskStatus.UPLOADING,
         }:
             return
-        lines = [task.phase]
-        if task.status == TaskStatus.DOWNLOADING and task.progress > 0:
-            from ..utils.presentation import progress_bar
-
-            lines.append(progress_bar(task.progress))
-            details = " · ".join(
-                part for part in (task.speed, f"ETA {task.eta}s" if task.eta else None) if part
-            )
-            if details:
-                lines.append(details)
         await self.telegram.edit_status(
             task.chat_id,
             task.status_message_id,
-            panel(task.title, lines),
+            progress_card(task),
         )
 
     async def _set_phase(self, task: DownloadTask, status: TaskStatus, phase: str) -> None:
@@ -114,7 +105,7 @@ class MediaPipeline:
             return
 
         size_mb = source.stat().st_size / (1024 * 1024)
-        await self._set_phase(task, TaskStatus.UPLOADING, f"Отправка файла · {size_mb:.1f} MB")
+        await self._set_phase(task, TaskStatus.UPLOADING, f"Отправка файла · {size_mb:.1f} МБ")
         if task.action == DownloadAction.AUDIO:
             caption = media_caption(task.title, task.url, kind="audio", size_mb=size_mb)
             try:

@@ -83,6 +83,8 @@ class Settings:
     download_stall_timeout_seconds: int
     download_rate_limit_bytes: int
     progress_update_seconds: int
+    rich_messages_enabled: bool = True
+    custom_emoji_enabled: bool = True
 
     @property
     def effective_upload_limit(self) -> int:
@@ -126,6 +128,8 @@ def build_settings() -> Settings:
         download_stall_timeout_seconds=_integer("DOWNLOAD_STALL_TIMEOUT_SECONDS", 180, minimum=30),
         download_rate_limit_bytes=_integer("DOWNLOAD_RATE_LIMIT_BYTES", 0, minimum=0),
         progress_update_seconds=_integer("PROGRESS_UPDATE_SECONDS", 3, minimum=1),
+        rich_messages_enabled=_boolean("RICH_MESSAGES_ENABLED", True),
+        custom_emoji_enabled=_boolean("CUSTOM_EMOJI_ENABLED", True),
     )
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from config import Settings
 
@@ -15,27 +15,37 @@ from ..core.models import TaskStatus
 from ..core.selection_store import SelectionStore
 from ..core.telegram_gateway import TelegramGateway
 from ..core.user_stats import UserStatsManager
-from ..utils.presentation import clip, panel, progress_bar
+from ..utils.cards import downloads_card, help_card, stats_card
+from ..utils.presentation import MessageContent, home_card, panel
+from ..utils.theme import button
 
 
 @dataclass(frozen=True, slots=True)
 class Screen:
-    text: str
+    text: MessageContent
     keyboard: InlineKeyboardMarkup
 
 
 def menu_keyboard(user_id: int, *, cancellable: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(text="Загрузки", callback_data=f"ui:status:{user_id}"),
-            InlineKeyboardButton(text="Статистика", callback_data=f"ui:stats:{user_id}"),
+            button(
+                "Загрузки", icon="downloads", style="primary", callback_data=f"ui:status:{user_id}"
+            ),
+            button(
+                "Статистика", icon="stats", style="success", callback_data=f"ui:stats:{user_id}"
+            ),
         ],
-        [InlineKeyboardButton(text="Как пользоваться", callback_data=f"ui:help:{user_id}")],
+        [
+            button(
+                "Как пользоваться", icon="help", style="primary", callback_data=f"ui:help:{user_id}"
+            ),
+            button("Главная", icon="brand", callback_data=f"ui:home:{user_id}"),
+        ],
     ]
     if cancellable:
         rows.insert(
-            0,
-            [InlineKeyboardButton(text="Отменить загрузки", callback_data=f"ui:cancel:{user_id}")],
+            0, [button("✕ Отменить загрузки", style="danger", callback_data=f"ui:cancel:{user_id}")]
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -70,19 +80,10 @@ class CommandHandlers:
         keyboard = menu_keyboard(user_id)
         if action == "help":
             return Screen(
-                panel(
-                    "Как пользоваться",
-                    [
-                        "Пришлите ссылку на видео или публикацию, затем выберите формат.",
-                        "В группе видео скачивается автоматически, с ориентиром на 720p.",
-                        "",
-                        "MP3, GIF до 30 секунд, субтитры и обложка доступны в меню публикации.",
-                        f"Лимит файла: {self.settings.effective_upload_limit / 1048576:g} МБ.",
-                        f"В плейлисте: до {self.settings.max_playlist_items} видео; действует лимит очереди.",
-                        "",
-                        "/status — загрузки в этом чате",
-                        "/cancel — отменить проверку ссылки и загрузки до отправки",
-                    ],
+                help_card(
+                    upload_limit=self.settings.effective_upload_limit,
+                    playlist_limit=self.settings.max_playlist_items,
+                    user_limit=self.settings.max_tasks_per_user,
                 ),
                 keyboard,
             )
@@ -90,14 +91,7 @@ class CommandHandlers:
             return self.status_screen(user_id, chat_id)
         if action == "stats":
             value = await asyncio.to_thread(self.stats.get_user_stats, user_id)
-            lines = [
-                f"Скачано: {value.downloads_count}",
-                f"Видео: {value.total_videos} · Аудио: {value.total_audios}",
-                f"Остальные файлы: {value.total_other_downloads}",
-                f"Объём: {value.total_size_mb:.1f} МБ",
-                f"Неудачных загрузок: {value.failed_downloads}",
-            ]
-            return Screen(panel("Статистика", lines), keyboard)
+            return Screen(stats_card(value), keyboard)
         if action == "cancel":
             count = self.manager.cancel_for_user(user_id, chat_id=chat_id)
             choices = self.selections.cancel_for_user(user_id, chat_id=chat_id)
@@ -109,24 +103,22 @@ class CommandHandlers:
                 for t in self.manager.snapshot(user_id=user_id, chat_id=chat_id)
             ):
                 lines.append("Файл уже отправляется. Дождитесь завершения.")
-            return Screen(panel("Отмена", lines), keyboard)
+            return Screen(panel("Отмена", lines, icon="done"), keyboard)
         return Screen(
-            panel("ReSave", ["Пришлите ссылку — скачаю видео, музыку или фото."]), keyboard
+            home_card(
+                upload_limit=self.settings.effective_upload_limit,
+                playlist_limit=self.settings.max_playlist_items,
+                user_limit=self.settings.max_tasks_per_user,
+            ),
+            keyboard,
         )
 
     def status_screen(self, user_id: int, chat_id: int) -> Screen:
         tasks = self.manager.snapshot(user_id=user_id, chat_id=chat_id)
-        lines = []
-        for task in tasks[:10]:
-            phase = task.phase
-            if task.status == TaskStatus.DOWNLOADING and task.progress > 0:
-                phase += f" · {progress_bar(task.progress)}"
-            lines.extend([clip(task.title, 160), phase, ""])
-        if len(tasks) > 10:
-            lines.append(f"Ещё в очереди: {len(tasks) - 10}")
-        if not tasks:
-            lines = ["Сейчас загрузок нет. Пришлите ссылку."]
-        return Screen(panel("Загрузки", lines), menu_keyboard(user_id, cancellable=bool(tasks)))
+        return Screen(
+            downloads_card(tasks),
+            menu_keyboard(user_id, cancellable=bool(tasks)),
+        )
 
     async def show(self, message: Message, action: str) -> None:
         if message.from_user is None:
@@ -166,7 +158,7 @@ class CommandHandlers:
         if len(parts) != 3 or parts[2] != str(call.from_user.id):
             await self.telegram.answer_callback(call, "Откройте своё меню командой /start.")
             return
-        if parts[1] not in {"help", "status", "stats", "cancel"}:
+        if parts[1] not in {"help", "status", "stats", "cancel", "home"}:
             await self.telegram.answer_callback(call, "Кнопка устарела. Откройте /start.")
             return
         if parts[1] == "cancel":

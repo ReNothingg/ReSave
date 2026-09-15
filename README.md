@@ -36,6 +36,7 @@
 | **GIF** | Конвертация роликов до 30 секунд |
 | **Субтитры** | Обычные и автоматически созданные |
 | **Плейлисты** | Добавление видео в очередь с лимитом |
+| **Оформление** | Rich Messages, цветные кнопки и анимированные эмодзи |
 
 **YouTube · TikTok · Instagram · X / Twitter · Vimeo · Reddit**
 
@@ -144,8 +145,14 @@ docker compose up -d telegram-bot-api
 <details>
 <summary><strong>Для разработки</strong></summary>
 
+Оформление включено по умолчанию: `RICH_MESSAGES_ENABLED=true`, `CUSTOM_EMOJI_ENABLED=true`.
+Эмодзи взяты из набора Telegram Topics и проверены как анимированные.
+Для их использования нужен Premium у владельца бота либо дополнительный username с Fragment.
+Если API отклоняет эмодзи, бот сохраняет Rich Messages и цветные кнопки, заменяя иконки на обычные.
+Для API без Rich Messages предусмотрено HTML-оформление.
+
 ```bash
-.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip install 'ruff>=0.9,<1'
 .venv/bin/python -m ruff check .
 .venv/bin/python -m compileall -q main.py config.py src
 ```

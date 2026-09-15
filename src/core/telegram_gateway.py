@@ -11,14 +11,22 @@ from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
     TelegramNetworkError,
+    TelegramNotFound,
     TelegramRetryAfter,
 )
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
+    InlineKeyboardMarkup,
     InputMediaPhoto,
+    LinkPreviewOptions,
+    Message,
     ReplyParameters,
 )
+
+from ..utils.presentation import MessageContent, as_content
+from ..utils.theme import plain_icons, without_custom_emoji
+from .rich_api import InputRichMessage, send_rich
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -33,12 +41,16 @@ class TelegramGateway:
         local_api: bool = False,
         use_file_uri: bool = False,
         cloud_upload_limit: int = 50 * 1024 * 1024,
+        rich_messages: bool = True,
+        custom_emoji: bool = True,
     ):
         self.bot = bot
         self.cloud_bot = cloud_bot
         self.local_api = local_api
         self.use_file_uri = use_file_uri
         self.cloud_upload_limit = cloud_upload_limit
+        self.rich_messages = rich_messages
+        self.custom_emoji = custom_emoji
 
     async def _retry(
         self,
@@ -79,16 +91,17 @@ class TelegramGateway:
             else None
         )
 
-    async def edit_status(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+    async def edit_status(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str | MessageContent,
+        **kwargs,
+    ) -> bool:
         try:
             async with asyncio.timeout(8):
-                await self.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=text,
-                    parse_mode="HTML",
-                    request_timeout=7,
-                    **kwargs,
+                await self._present(
+                    chat_id, text, message_id=message_id, request_timeout=7, **kwargs
                 )
             return True
         except (TelegramAPIError, TimeoutError) as exc:
@@ -102,10 +115,126 @@ class TelegramGateway:
         except TelegramBadRequest as exc:
             logger.debug("Cannot delete status %s/%s: %s", chat_id, message_id, exc)
 
-    async def send_message(self, chat_id: int, text: str, **kwargs):
-        return await self._retry(
-            lambda: self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", **kwargs)
+    async def send_message(self, chat_id: int, text: str | MessageContent, **kwargs):
+        return await self._present(chat_id, text, **kwargs)
+
+    async def reply(self, message: Message, text: str | MessageContent, **kwargs):
+        return await self.send_message(
+            message.chat.id,
+            text,
+            reply_parameters=self._reply(message.message_id),
+            **kwargs,
         )
+
+    async def _present(
+        self,
+        chat_id: int,
+        value: str | MessageContent,
+        *,
+        message_id: int | None = None,
+        **kwargs,
+    ):
+        content = as_content(value)
+        for _ in range(3):
+            try:
+                return await self._retry(
+                    lambda: self._send_content(chat_id, message_id, content, kwargs)
+                )
+            except (TelegramBadRequest, TelegramNotFound) as exc:
+                if not self._downgrade(exc):
+                    raise
+        raise RuntimeError("Telegram rejected message formatting")
+
+    async def _send_content(
+        self, chat_id: int, message_id: int | None, content: MessageContent, kwargs: dict
+    ):
+        params = dict(kwargs)
+        params.pop("parse_mode", None)
+        markup = params.get("reply_markup")
+        if isinstance(markup, InlineKeyboardMarkup) and not self.custom_emoji:
+            params["reply_markup"] = plain_icons(markup)
+        params.setdefault("request_timeout", 30)
+        if self.rich_messages:
+            html = (
+                content.rich_html if self.custom_emoji else without_custom_emoji(content.rich_html)
+            )
+            params["rich_message"] = InputRichMessage(html=html)
+            return await send_rich(self.bot, chat_id=chat_id, message_id=message_id, **params)
+        else:
+            params["text"] = (
+                content.html if self.custom_emoji else without_custom_emoji(content.html)
+            )
+            params["parse_mode"] = "HTML"
+            params["link_preview_options"] = LinkPreviewOptions(is_disabled=True)
+        if message_id is not None:
+            return await self.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, **params
+            )
+        return await self.bot.send_message(chat_id=chat_id, **params)
+
+    def _downgrade(self, exc: TelegramAPIError) -> bool:
+        value = str(exc).lower()
+        if self.custom_emoji and self._emoji_error(value):
+            self.custom_emoji = False
+            logger.warning(
+                "Custom emoji unavailable; keeping Rich Messages and colored buttons: %s", exc
+            )
+            return True
+        if self.rich_messages and self._rich_error(exc, value):
+            self.rich_messages = False
+            logger.warning("Rich Messages unavailable; using formatted HTML: %s", exc)
+            return True
+        return False
+
+    @staticmethod
+    def _emoji_error(value: str) -> bool:
+        return any(
+            marker in value
+            for marker in (
+                "custom emoji",
+                "custom_emoji",
+                "emoji-id",
+                "emoji_id",
+                "emoji id",
+                "document_invalid",
+            )
+        )
+
+    @staticmethod
+    def _rich_error(exc: TelegramAPIError, value: str) -> bool:
+        if any(
+            marker in value
+            for marker in ("chat not found", "message to edit not found", "message can't be edited")
+        ):
+            return False
+        return isinstance(exc, TelegramNotFound) or any(
+            marker in value
+            for marker in (
+                "rich message",
+                "rich_message",
+                "unknown method",
+                "unsupported method",
+                "method not found",
+                "can't parse",
+                "unsupported start tag",
+            )
+        )
+
+    def _media_kwargs(self, kwargs: dict) -> dict:
+        result = dict(kwargs)
+        if not self.custom_emoji and isinstance(result.get("caption"), str):
+            result["caption"] = without_custom_emoji(result["caption"])
+        return result
+
+    async def _media_request(self, operation: Callable[[], Awaitable[T]]) -> T:
+        try:
+            return await self._retry(operation)
+        except TelegramBadRequest as exc:
+            if not self.custom_emoji or not self._emoji_error(str(exc).lower()):
+                raise
+            self.custom_emoji = False
+            logger.warning("Custom emoji unavailable in media captions: %s", exc)
+            return await self._retry(operation)
 
     async def answer_callback(self, call: CallbackQuery, text: str | None = None) -> None:
         try:
@@ -133,13 +262,15 @@ class TelegramGateway:
         filename: str | None = None,
     ) -> T:
         try:
-            return await self._retry(lambda: local_call(self._file(path, filename=filename)))
+            return await self._media_request(
+                lambda: local_call(self._file(path, filename=filename))
+            )
         except Exception as exc:
             if not self._can_cloud_fallback(path) or not self._is_transport_error(exc):
                 raise
             logger.warning("Local Bot API upload failed; using cloud fallback: %s", exc)
             assert self.cloud_bot is not None
-            return await self._retry(
+            return await self._media_request(
                 lambda: cloud_call(self.cloud_bot, self._file(path, local=False))
             )
 
@@ -163,8 +294,8 @@ class TelegramGateway:
         }
         return await self._upload_with_fallback(
             path,
-            lambda media: self.bot.send_video(video=media, **kwargs),
-            lambda bot, media: bot.send_video(video=media, **kwargs),
+            lambda media: self.bot.send_video(video=media, **self._media_kwargs(kwargs)),
+            lambda bot, media: bot.send_video(video=media, **self._media_kwargs(kwargs)),
         )
 
     async def send_audio(
@@ -191,8 +322,8 @@ class TelegramGateway:
             kwargs["duration"] = duration
         return await self._upload_with_fallback(
             path,
-            lambda media: self.bot.send_audio(audio=media, **kwargs),
-            lambda bot, media: bot.send_audio(audio=media, **kwargs),
+            lambda media: self.bot.send_audio(audio=media, **self._media_kwargs(kwargs)),
+            lambda bot, media: bot.send_audio(audio=media, **self._media_kwargs(kwargs)),
         )
 
     async def send_document(
@@ -213,9 +344,10 @@ class TelegramGateway:
         }
         return await self._upload_with_fallback(
             path,
-            lambda media: self.bot.send_document(document=media, **kwargs),
+            lambda media: self.bot.send_document(document=media, **self._media_kwargs(kwargs)),
             lambda bot, media: bot.send_document(
-                document=FSInputFile(path, filename=filename or path.name), **kwargs
+                document=FSInputFile(path, filename=filename or path.name),
+                **self._media_kwargs(kwargs),
             ),
             filename=filename,
         )
@@ -237,8 +369,8 @@ class TelegramGateway:
         }
         return await self._upload_with_fallback(
             path,
-            lambda media: self.bot.send_animation(animation=media, **kwargs),
-            lambda bot, media: bot.send_animation(animation=media, **kwargs),
+            lambda media: self.bot.send_animation(animation=media, **self._media_kwargs(kwargs)),
+            lambda bot, media: bot.send_animation(animation=media, **self._media_kwargs(kwargs)),
         )
 
     async def send_photo(
@@ -258,8 +390,8 @@ class TelegramGateway:
         }
         return await self._upload_with_fallback(
             path,
-            lambda media: self.bot.send_photo(photo=media, **kwargs),
-            lambda bot, media: bot.send_photo(photo=media, **kwargs),
+            lambda media: self.bot.send_photo(photo=media, **self._media_kwargs(kwargs)),
+            lambda bot, media: bot.send_photo(photo=media, **self._media_kwargs(kwargs)),
         )
 
     async def send_photo_group(
@@ -270,35 +402,32 @@ class TelegramGateway:
         caption: str | None,
         reply_to: int | None,
     ):
-        media = [
-            InputMediaPhoto(
-                media=self._file(path),
-                caption=caption if index == 0 else None,
-                parse_mode="HTML" if index == 0 and caption else None,
-            )
-            for index, path in enumerate(paths)
-        ]
+        def media_items(local: bool = True):
+            caption_text = self._media_kwargs({"caption": caption})["caption"]
+            return [
+                InputMediaPhoto(
+                    media=self._file(path, local=local),
+                    caption=caption_text if index == 0 else None,
+                    parse_mode="HTML" if index == 0 and caption_text else None,
+                )
+                for index, path in enumerate(paths)
+            ]
+
         kwargs = {
             "chat_id": chat_id,
             "reply_parameters": self._reply(reply_to),
             "request_timeout": 300,
         }
         try:
-            return await self._retry(lambda: self.bot.send_media_group(media=media, **kwargs))
+            return await self._media_request(
+                lambda: self.bot.send_media_group(media=media_items(), **kwargs)
+            )
         except Exception as exc:
             if not all(
                 self._can_cloud_fallback(path) for path in paths
             ) or not self._is_transport_error(exc):
                 raise
             assert self.cloud_bot is not None
-            cloud_media = [
-                InputMediaPhoto(
-                    media=self._file(path, local=False),
-                    caption=caption if index == 0 else None,
-                    parse_mode="HTML" if index == 0 and caption else None,
-                )
-                for index, path in enumerate(paths)
-            ]
-            return await self._retry(
-                lambda: self.cloud_bot.send_media_group(media=cloud_media, **kwargs)
+            return await self._media_request(
+                lambda: self.cloud_bot.send_media_group(media=media_items(local=False), **kwargs)
             )
