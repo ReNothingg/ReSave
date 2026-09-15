@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 
@@ -11,6 +12,20 @@ class SelectionStore:
         self.ttl_seconds = ttl_seconds
         self.max_entries = max_entries
         self._items: dict[str, MediaSelection] = {}
+        self._requests: dict[tuple[int, int], asyncio.Task] = {}
+
+    def begin_request(self, user_id: int, chat_id: int) -> bool:
+        key = (user_id, chat_id)
+        if key in self._requests or len(self._requests) >= 4:
+            return False
+        task = asyncio.current_task()
+        if task is None:
+            return False
+        self._requests[key] = task
+        return True
+
+    def finish_request(self, user_id: int, chat_id: int) -> None:
+        self._requests.pop((user_id, chat_id), None)
 
     def put(
         self,
@@ -54,6 +69,19 @@ class SelectionStore:
 
     def pop(self, token: str) -> None:
         self._items.pop(token, None)
+
+    def cancel_for_user(self, user_id: int, *, chat_id: int) -> int:
+        request = self._requests.get((user_id, chat_id))
+        if request and not request.done():
+            request.cancel()
+        tokens = [
+            token
+            for token, item in self._items.items()
+            if item.user_id == user_id and item.chat_id == chat_id
+        ]
+        for token in tokens:
+            self._items.pop(token, None)
+        return len(tokens) + int(request is not None)
 
     def prune(self) -> None:
         now = time.monotonic()

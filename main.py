@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import sys
+from contextlib import AsyncExitStack
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import IO
@@ -22,11 +22,12 @@ from src.core.media_downloader import MediaDownloader
 from src.core.media_pipeline import MediaPipeline
 from src.core.selection_store import SelectionStore
 from src.core.telegram_gateway import TelegramGateway
-from src.core.user_stats import UserStatsManager, set_stats_manager
+from src.core.user_stats import UserStatsManager
 from src.core.video_info import VideoInfoService
 from src.handlers.admin_handlers import build_admin_router
 from src.handlers.command_handlers import build_command_router
 from src.handlers.download_handlers import build_download_router
+from src.handlers.error_handlers import ErrorHandler
 from src.utils.file_utils import cleanup_old_files
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,11 @@ async def setup_commands(bot: Bot, admin_ids: tuple[int, ...]) -> None:
         BotCommand(command="broadcast", description="Рассылка"),
         BotCommand(command="stats_global", description="Общая статистика"),
     ]
-    await bot.set_my_commands(common)
+    try:
+        await bot.set_my_commands(common)
+    except Exception as exc:
+        logger.warning("Cannot set global bot commands: %s", exc)
+        return
     for admin_id in admin_ids:
         try:
             await bot.set_my_commands(
@@ -107,47 +112,57 @@ async def run(settings: config.Settings | None = None) -> None:
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
     cleanup_old_files(str(settings.temp_dir), max_age_hours=24)
 
-    bot, cloud_bot = build_bot(settings)
-    stats = UserStatsManager(settings.stats_db_path)
-    set_stats_manager(stats)
-    telegram = TelegramGateway(
-        bot,
-        cloud_bot=cloud_bot,
-        local_api=settings.bot_api_is_local,
-        use_file_uri=settings.bot_api_use_file_uri,
-        cloud_upload_limit=config.CLOUD_BOT_API_UPLOAD_LIMIT,
-    )
-    downloader = MediaDownloader(settings)
-    pipeline = MediaPipeline(settings, downloader, telegram, stats)
-    manager = DownloadManager(
-        processor=pipeline.process,
-        progress_reporter=pipeline.update_progress,
-        telegram=telegram,
-        stats=stats,
-        max_concurrent_downloads=settings.max_concurrent_downloads,
-        max_queue_size=settings.max_queue_size,
-        max_tasks_per_user=settings.max_tasks_per_user,
-        progress_update_seconds=settings.progress_update_seconds,
-    )
-    selections = SelectionStore(settings.selection_ttl_seconds)
-    info_service = VideoInfoService(
-        settings.cookies_file,
-        settings.max_playlist_items,
-        max_concurrent_requests=1,
-    )
-    dispatcher = Dispatcher(storage=MemoryStorage())
-    dispatcher.include_router(build_admin_router(settings, stats))
-    dispatcher.include_router(build_command_router(manager, stats, telegram))
-    dispatcher.include_router(
-        build_download_router(
-            manager=manager,
-            info_service=info_service,
-            selections=selections,
-            settings=settings,
-        )
-    )
+    async with AsyncExitStack() as cleanup:
+        bot, cloud_bot = build_bot(settings)
+        cleanup.push_async_callback(bot.session.close)
+        if cloud_bot:
+            cleanup.push_async_callback(cloud_bot.session.close)
 
-    try:
+        stats = UserStatsManager(settings.stats_db_path)
+        cleanup.callback(stats.close)
+        telegram = TelegramGateway(
+            bot,
+            cloud_bot=cloud_bot,
+            local_api=settings.bot_api_is_local,
+            use_file_uri=settings.bot_api_use_file_uri,
+            cloud_upload_limit=config.CLOUD_BOT_API_UPLOAD_LIMIT,
+        )
+        downloader = MediaDownloader(settings)
+        pipeline = MediaPipeline(settings, downloader, telegram, stats)
+        manager = DownloadManager(
+            processor=pipeline.process,
+            progress_reporter=pipeline.update_progress,
+            telegram=telegram,
+            stats=stats,
+            max_concurrent_downloads=settings.max_concurrent_downloads,
+            max_queue_size=settings.max_queue_size,
+            max_tasks_per_user=settings.max_tasks_per_user,
+            progress_update_seconds=settings.progress_update_seconds,
+        )
+        cleanup.push_async_callback(manager.stop)
+        selections = SelectionStore(settings.selection_ttl_seconds)
+        info_service = VideoInfoService(
+            settings.cookies_file,
+            settings.max_playlist_items,
+            max_concurrent_requests=1,
+        )
+        dispatcher = Dispatcher(storage=MemoryStorage())
+        dispatcher.errors.register(ErrorHandler(telegram).__call__)
+        dispatcher.include_router(build_admin_router(settings, stats, telegram))
+        dispatcher.include_router(
+            build_command_router(manager, stats, telegram, settings, selections)
+        )
+        dispatcher.include_router(
+            build_download_router(
+                manager=manager,
+                info_service=info_service,
+                selections=selections,
+                settings=settings,
+                ffmpeg_available=downloader.ffmpeg_available,
+                telegram=telegram,
+            )
+        )
+
         try:
             await bot.get_me()
         except TelegramNetworkError as exc:
@@ -158,8 +173,13 @@ async def run(settings: config.Settings | None = None) -> None:
                 ) from exc
             raise
 
-        if not shutil.which("ffmpeg"):
+        if not downloader.ffmpeg_available:
             logger.warning("FFmpeg not found; audio, GIF and stream merging may fail")
+        if settings.max_file_size > settings.bot_api_upload_limit:
+            logger.warning(
+                "MAX_FILE_SIZE exceeds the active Bot API limit and will be clamped to %s MB",
+                settings.effective_upload_limit // (1024 * 1024),
+            )
         await manager.start()
         await setup_commands(bot, settings.admin_ids)
         logger.info(
@@ -173,13 +193,6 @@ async def run(settings: config.Settings | None = None) -> None:
             allowed_updates=dispatcher.resolve_used_update_types(),
             tasks_concurrency_limit=16,
         )
-    finally:
-        await manager.stop()
-        stats.close()
-        set_stats_manager(None)
-        if cloud_bot:
-            await cloud_bot.session.close()
-        await bot.session.close()
 
 
 def main() -> None:

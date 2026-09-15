@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 import unicodedata
@@ -23,6 +24,8 @@ def cleanup_old_files(temp_dir: str | Path, *, max_age_hours: int = 24) -> None:
         return
     threshold = time.time() - max_age_hours * 3600
     for entry in root.iterdir():
+        if not re.fullmatch(r"task_[0-9a-f]{32}", entry.name):
+            continue
         try:
             if entry.stat().st_mtime > threshold:
                 continue

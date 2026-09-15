@@ -7,15 +7,12 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
-import yt_dlp
 
+from .errors import VideoInfoError
+from .extractor import youtube_client
 from .tiktok_fallback import fetch_tiktok_video_info, is_tiktok_url
 
 logger = logging.getLogger(__name__)
-
-
-class VideoInfoError(RuntimeError):
-    pass
 
 
 class VideoInfoService:
@@ -28,12 +25,14 @@ class VideoInfoService:
         self.cookies_file = cookies_file
         self.playlist_limit = playlist_limit
         self._semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self._pending: set[asyncio.Task] = set()
 
     async def resolve_url(self, url: str) -> str:
         if not is_tiktok_url(url) or "/video/" in url or "/photo/" in url:
             return url
         original = url
-        async with self._semaphore:
+        await self._acquire_slot()
+        try:
             try:
                 async with asyncio.timeout(15):
                     async with aiohttp.ClientSession() as session:
@@ -56,8 +55,9 @@ class VideoInfoService:
                                 url = urljoin(url, location)
                         raise VideoInfoError("Too many TikTok redirects")
             except (aiohttp.ClientError, TimeoutError):
-                # Let the extractor try its own networking implementation.
                 return original
+        finally:
+            self._semaphore.release()
 
     def _options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -76,7 +76,7 @@ class VideoInfoService:
 
     def _fetch_sync(self, url: str) -> dict[str, Any]:
         try:
-            with yt_dlp.YoutubeDL(self._options()) as ydl:
+            with youtube_client(self._options()) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
             if is_tiktok_url(url):
@@ -85,21 +85,49 @@ class VideoInfoService:
                 except Exception as fallback_exc:
                     raise VideoInfoError(f"{exc}; TikTok fallback: {fallback_exc}") from exc
             raise VideoInfoError(str(exc)) from exc
-        if not info:
+        if not isinstance(info, dict) or not info:
             raise VideoInfoError("Источник не вернул информацию о медиа")
         return info
 
     async def fetch(self, url: str) -> dict[str, Any]:
-        async with self._semaphore:
-            return await asyncio.to_thread(self._fetch_sync, url)
+        await self._acquire_slot()
+        operation = asyncio.create_task(asyncio.to_thread(self._fetch_sync, url))
+        self._pending.add(operation)
+        operation.add_done_callback(self._finished)
+        try:
+            return await asyncio.wait_for(asyncio.shield(operation), timeout=90)
+        except TimeoutError as exc:
+            raise VideoInfoError("Metadata lookup timeout") from exc
+
+    async def _acquire_slot(self) -> None:
+        try:
+            await asyncio.wait_for(self._semaphore.acquire(), timeout=2)
+        except TimeoutError as exc:
+            raise VideoInfoError("Проверка ссылок занята. Попробуйте через минуту.") from exc
+
+    def _finished(self, operation: asyncio.Task) -> None:
+        self._pending.discard(operation)
+        self._semaphore.release()
+        if not operation.cancelled():
+            operation.exception()
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def collect_resolutions(info: dict[str, Any]) -> list[int]:
-    heights = {
-        int(item["height"])
-        for item in info.get("formats") or []
-        if item.get("height") and item.get("vcodec", "none") != "none"
-    }
+    heights: set[int] = set()
+    for item in info.get("formats") or []:
+        if not isinstance(item, dict) or item.get("vcodec", "none") == "none":
+            continue
+        height = _positive_int(item.get("height"))
+        if height is not None:
+            heights.add(height)
     return sorted(heights, reverse=True)
 
 
@@ -112,24 +140,50 @@ def compact_media_info(info: dict[str, Any]) -> dict[str, Any]:
     compact["thumbnail"] = bool(info.get("thumbnail"))
     compact["subtitles"] = bool(info.get("subtitles"))
     compact["automatic_captions"] = bool(info.get("automatic_captions"))
+    formats = [item for item in info.get("formats") or [] if isinstance(item, dict)]
+    compact["has_video"] = (
+        any(item.get("vcodec", "none") != "none" for item in formats)
+        if formats
+        else info.get("vcodec") != "none"
+    )
+    compact["has_audio"] = (
+        any(item.get("acodec", "unknown") != "none" for item in formats)
+        if formats
+        else info.get("acodec") != "none"
+    )
+    languages = list(
+        dict.fromkeys(
+            [
+                *(info.get("subtitles") or {}),
+                *(info.get("automatic_captions") or {}),
+            ]
+        )
+    )
+    preferred = [lang for lang in ("ru", "en", "ru-orig", "en-orig") if lang in languages]
+    compact["subtitle_languages"] = preferred[:2] or languages[:1]
     if info.get("_tiktok_fallback"):
         compact["_tiktok_fallback"] = True
-    compact["formats"] = [
-        {
-            "height": item.get("height"),
-            "vcodec": item.get("vcodec"),
-            "filesize": item.get("filesize") or item.get("filesize_approx"),
-        }
-        for item in info.get("formats") or []
-        if item.get("height") and item.get("vcodec", "none") != "none"
-    ]
+    compact["formats"] = []
+    for item in info.get("formats") or []:
+        if not isinstance(item, dict) or item.get("vcodec", "none") == "none":
+            continue
+        height = _positive_int(item.get("height"))
+        if height is None:
+            continue
+        compact["formats"].append(
+            {
+                "height": height,
+                "vcodec": item.get("vcodec"),
+                "filesize": item.get("filesize") or item.get("filesize_approx"),
+            }
+        )
     return compact
 
 
 def collect_playlist_entries(info: dict[str, Any], limit: int) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for entry in info.get("entries") or []:
-        if not entry:
+        if not isinstance(entry, dict):
             continue
         url = entry.get("webpage_url") or entry.get("original_url")
         raw_url = entry.get("url")
@@ -154,18 +208,3 @@ def collect_playlist_entries(info: dict[str, Any], limit: int) -> list[dict[str,
         if len(result) >= limit:
             break
     return result
-
-
-# Lightweight compatibility functions.
-def fetch_video_info_result(url: str):
-    import config
-
-    try:
-        return VideoInfoService(Path(config.COOKIES_FILE))._fetch_sync(url), None
-    except VideoInfoError as exc:
-        logger.info("Media info lookup failed: %s", exc)
-        return None, str(exc)
-
-
-def fetch_video_info(url: str):
-    return fetch_video_info_result(url)[0]

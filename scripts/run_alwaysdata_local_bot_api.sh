@@ -28,7 +28,6 @@ cd "$APP_DIR"
 
 if [ -f ".env" ]; then
   set -a
-  # shellcheck disable=SC1091
   . ".env"
   set +a
 fi
@@ -77,7 +76,11 @@ acquire_lock() {
   fi
 
   log "Removing stale service lock"
-  rm -rf "$LOCK_DIR"
+  rm -f "$LOCK_DIR/pid"
+  if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+    log "Cannot safely remove stale lock directory: $LOCK_DIR"
+    exit 1
+  fi
   mkdir "$LOCK_DIR"
   printf '%s\n' "$$" >"$LOCK_DIR/pid"
 }
@@ -121,7 +124,8 @@ cleanup_children() {
 cleanup() {
   cleanup_children
   if [ -f "$LOCK_DIR/pid" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null || true)" = "$$" ]; then
-    rm -rf "$LOCK_DIR"
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
 }
 
@@ -140,8 +144,6 @@ mkdir -p "$BOT_API_DIR" "$BOT_API_TEMP_DIR" "$LOG_DIR"
 
 start_bot_api() {
   log "Starting telegram-bot-api at $BOT_API_BASE_URL"
-  # At ERROR verbosity telegram-bot-api enables a 250 ms watchdog. Shared-host
-  # CPU pauses regularly exceed that threshold and make TDLib abort itself.
   "$BOT_API_BIN" \
     --api-id="$TELEGRAM_API_ID" \
     --api-hash="$TELEGRAM_API_HASH" \

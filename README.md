@@ -1,114 +1,110 @@
 <div align="center">
 
-<img src="logo.png" alt="Логотип ReSave" width="180">
+<img src="logo.png" alt="ReSave" width="112">
 
 # ReSave
 
-### Скачивайте видео, музыку и фото прямо в Telegram
-
-Отправьте ссылку, выберите формат — всё остальное бот сделает сам.
+**Видео, музыка и фото — по ссылке в Telegram.**
 
 <p>
-  <a href="https://t.me/ReSafeBot"><img src="https://img.shields.io/badge/Telegram-Open_%40ReSafeBot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Открыть ReSave в Telegram"></a>
+  <a href="https://t.me/ReSafeBot"><img src="https://img.shields.io/badge/Открыть_бота-@ReSafeBot-d60000?style=for-the-badge&logo=telegram&logoColor=white" alt="Открыть @ReSafeBot"></a>
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/aiogram-3.31%2B-2CA5E0?style=flat-square" alt="aiogram 3.31+">
-  <img src="https://img.shields.io/badge/yt--dlp-2026.8-FF0000?style=flat-square" alt="yt-dlp 2026.8">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4CAF50?style=flat-square" alt="Apache License 2.0"></a>
+  <img src="https://img.shields.io/badge/Python-3.11+-31363f?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/aiogram-3-31363f?style=flat-square" alt="aiogram 3">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-31363f?style=flat-square" alt="Apache 2.0"></a>
 </p>
 
-[Открыть бота](https://t.me/ReSafeBot) · [Возможности](#возможности) · [Запуск](#запуск-своей-копии) · [Конфигурация](#конфигурация)
+[Возможности](#возможности) · [Запуск](#запуск) · [Настройки](#настройки)
 
 </div>
 
 ---
 
-## Как пользоваться
+### Ссылка → формат → файл
 
-1. Откройте [@ReSafeBot](https://t.me/ReSafeBot).
-2. Отправьте ссылку на публикацию или видео.
-3. Выберите качество, MP3, GIF, субтитры или превью.
-4. Получите готовый файл в Telegram.
-
-В группе достаточно отправить ссылку — бот автоматически поставит видео до 720p в очередь.
+Пришлите ссылку на публикацию, выберите качество или формат и получите файл в том же чате.
 
 ## Возможности
 
-| Что умеет ReSave |
-|---|
-| Скачивает видео с выбором доступного разрешения или максимального качества |
-| Извлекает аудио в MP3 |
-| Создаёт GIF из роликов продолжительностью до 30 секунд |
-| Загружает превью и TikTok-публикации с фотографиями |
-| Отправляет обычные и автоматически созданные субтитры |
-| Добавляет плейлисты в очередь с настраиваемым лимитом |
-| Работает в личных чатах, группах и супергруппах |
-| Ведёт личную и общую статистику загрузок в SQLite |
-| Поддерживает файлы до 2 000 MB через локальный Telegram Bot API |
+| Формат | Возможности |
+| :--- | :--- |
+| **Видео** | Выбор разрешения или лучшего качества |
+| **Аудио** | Извлечение MP3 |
+| **Фото** | Обложки видео и фотоальбомы TikTok |
+| **GIF** | Конвертация роликов до 30 секунд |
+| **Субтитры** | Обычные и автоматически созданные |
+| **Плейлисты** | Добавление видео в очередь с лимитом |
 
-ReSave работает с **YouTube, TikTok, Instagram, X/Twitter, Facebook, Vimeo, Twitch, Reddit** и другими источниками, которые поддерживает `yt-dlp`. Доступность  сайта зависит от его текущих ограничений ну и для закрытых публикаций могут потребоваться куки.
+**YouTube · TikTok · Instagram · X / Twitter · Vimeo · Reddit**
 
-## Команды
+И другие источники, поддерживаемые yt-dlp. Доступность зависит от сайта и прав доступа к публикации.
 
-| Команда | Назначение |
-|---|---|
-| `/start` | Открыть главное меню |
-| `/help` | Показать инструкцию |
-| `/status` | Посмотреть активные загрузки |
-| `/cancel` | Отменить свои загрузки в текущем чате |
-| `/stats` | Открыть личную статистику |
-| `/admin` | Открыть панель администратора |
-| `/broadcast` | Создать рассылку пользователям |
-| `/stats_global` | Посмотреть общую статистику |
+В личном чате доступен выбор формата. В группах бот скачивает автоматически, с ориентиром на 720p.
 
-Административные команды доступны только пользователям из `ADMIN_IDS`.
+<details>
+<summary><strong>Команды</strong></summary>
 
-## Установка
+| Команда | Действие |
+| :--- | :--- |
+| `/start` | Главное меню |
+| `/help` | Инструкция и лимиты |
+| `/status` | Текущие загрузки |
+| `/cancel` | Отмена проверки ссылки и загрузок до отправки |
+| `/stats` | Личная статистика |
+| `/admin` | Управление ботом |
+| `/broadcast` | Рассылка с подтверждением и остановкой |
+| `/stats_global` | Общая статистика |
+
+Последние три команды доступны администраторам в личном чате.
+
+</details>
+
+## Запуск
+
+**Нужны:** Python 3.11+, FFmpeg и ffprobe.
 
 ```bash
 git clone https://github.com/ReNothingg/ReSave.git
 cd ReSave
+
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Конфигурация
+Вставьте токен бота в `.env`:
 
-Все настройки задаются через `.env`. Шаблон находится в [`.env.example`](.env.example).
+```env
+BOT_TOKEN=ваш_токен
+```
 
-| Переменная | По умолчанию | Назначение |
-|---|---:|---|
-| `BOT_TOKEN` | — | обязательный токен Telegram-бота |
-| `ADMIN_IDS` | — | Telegram ID администраторов через запятую |
-| `TEMP_DIR` | `temp_downloads` | директория временных загрузок |
-| `STATS_DB_PATH` | `database.db` | путь к SQLite-базе статистики |
-| `COOKIES_FILE` | `cookies.txt` | cookies для источников с ограниченным доступом |
-| `LOG_FILE` | `bot.log` | файл логов |
-| `LOG_LEVEL` | `INFO` | уровень логирования |
-| `MAX_CONCURRENT_DOWNLOADS` | `2` | количество параллельных воркеров |
-| `MAX_QUEUE_SIZE` | `100` | общий размер очереди |
-| `MAX_TASKS_PER_USER` | `10` | лимит активных задач одного пользователя |
-| `MAX_PLAYLIST_ITEMS` | `25` | максимальное число элементов плейлиста |
-| `MAX_FILE_SIZE` | лимит Bot API | максимальный размер скачиваемого файла |
-| `SEND_AS_DOC_LIMIT` | лимит Bot API | порог отправки медиа как документа |
-| `SELECTION_TTL_SECONDS` | `900` | срок действия кнопок выбора формата |
-| `DOWNLOAD_TIMEOUT_SECONDS` | `1800` | общий дедлайн загрузки по progress hook |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | `180` | допустимое время без прогресса |
-| `DOWNLOAD_RATE_LIMIT_BYTES` | `0` | ограничение скорости; `0` — без ограничения |
-| `PROGRESS_UPDATE_SECONDS` | `3` | частота обновления прогресса |
-| `BOT_API_BASE_URL` | — | адрес локального Telegram Bot API |
-| `BOT_API_IS_LOCAL` | `false` | включить локальный режим Bot API |
-| `BOT_API_USE_FILE_URI` | `false` | передавать локальному API путь вместо файла |
+Запустите:
 
-Относительные пути вычисляются от корня проекта, поэтому бот можно запускать из любой рабочей директории.
+```bash
+.venv/bin/python main.py
+```
 
-## Файлы до 2 GB
+## Настройки
 
-Облачный Telegram Bot API ограничивает размер загружаемых ботом файлов. Для больших файлов ReSave умеет работать с локальным Bot API.
+Все параметры — в [`.env.example`](.env.example). Относительные пути считаются от корня проекта.
+
+| Параметр | Назначение |
+| :--- | :--- |
+| `ADMIN_IDS` | ID администраторов через запятую |
+| `MAX_CONCURRENT_DOWNLOADS` | Параллельные загрузки · по умолчанию **2** |
+| `MAX_TASKS_PER_USER` | Задачи одного пользователя · **10** |
+| `MAX_PLAYLIST_ITEMS` | Видео из одного плейлиста · **25** |
+| `MAX_FILE_SIZE` | Максимальный размер файла в байтах |
+| `COOKIES_FILE` | Файл cookies для публикаций с ограниченным доступом |
+
+Лимит очереди пользователя действует и на плейлисты. Фактический размер файла ограничен выбранным Bot API.
+
+<details>
+<summary><strong>Большие файлы: локальный Bot API</strong></summary>
+
+Для файлов больше облачного лимита используется локальный Telegram Bot API.
 
 Добавьте в `.env`:
 
@@ -117,31 +113,58 @@ BOT_API_BASE_URL=http://127.0.0.1:8081
 BOT_API_IS_LOCAL=true
 BOT_API_USE_FILE_URI=false
 
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH=your-api-hash
+TELEGRAM_API_ID=ваш_api_id
+TELEGRAM_API_HASH=ваш_api_hash
 
 MAX_FILE_SIZE=2097152000
 SEND_AS_DOC_LIMIT=2097152000
 ```
 
-Запустите локальный API и самого бота:
+Запустите API через Docker, затем бота:
 
 ```bash
 docker compose up -d telegram-bot-api
-python main.py
+.venv/bin/python main.py
 ```
 
-При использовании Docker оставьте `BOT_API_USE_FILE_URI=false`: контейнер не видит абсолютные пути хоста, поэтому файл должен передаваться multipart-запросом. Значение `true` подходит только тогда, когда бот и нативный `telegram-bot-api` используют общую файловую систему.
+`BOT_API_USE_FILE_URI=true` нужен только при общей файловой системе бота и API. Для Docker оставьте `false`.
 
+</details>
 
-## Лицензия
+<details>
+<summary><strong>Cookies и хранение данных</strong></summary>
 
-Проект распространяется по лицензии [Apache License 2.0](LICENSE).
+- Cookies в формате Netscape — `cookies.txt`. Бот использует временные копии.
+- Статистика — `database.db` (SQLite).
+- Временные файлы — `temp_downloads/`.
+- Очередь и меню хранятся в памяти: после перезапуска незавершённые запросы нужно отправить снова.
+
+</details>
+
+<details>
+<summary><strong>Для разработки</strong></summary>
+
+```bash
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m ruff check .
+.venv/bin/python -m compileall -q main.py config.py src
+```
+
+| Путь | Ответственность |
+| :--- | :--- |
+| `main.py` | Запуск и сборка сервисов |
+| `src/handlers/` | Команды, меню и административные действия |
+| `src/core/` | Очередь, скачивание, обработка и отправка |
+| `src/utils/` | Форматирование текста и работа с файлами |
+
+Основные зависимости закреплены в `requirements.txt`. После их обновления проверяйте скачивание с нужных сайтов.
+
+</details>
 
 ---
 
 <div align="center">
 
-**[@ReSafeBot](https://t.me/ReSafeBot)**
+[Открыть бота](https://t.me/ReSafeBot) · [Apache 2.0](LICENSE)
 
 </div>

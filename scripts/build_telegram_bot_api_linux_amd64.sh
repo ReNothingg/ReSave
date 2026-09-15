@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 BUILD_DIR="$ROOT_DIR/.build/telegram-bot-api-linux-amd64"
 IMAGE_NAME="resave-telegram-bot-api-builder:linux-amd64"
+CONTAINER_NAME="resave-telegram-bot-api-extract-$$"
 
 mkdir -p "$DIST_DIR" "$BUILD_DIR"
 
@@ -35,10 +36,10 @@ RUN cmake -S . -B build \
   && cmake --build build --target install -j"$BUILD_JOBS"
 DOCKERFILE
 
-docker create --platform linux/amd64 --name resave-telegram-bot-api-extract "$IMAGE_NAME" >/dev/null
-trap 'docker rm -f resave-telegram-bot-api-extract >/dev/null 2>&1 || true' EXIT
+docker create --platform linux/amd64 --name "$CONTAINER_NAME" "$IMAGE_NAME" >/dev/null
+trap 'docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true' EXIT
 
-docker cp resave-telegram-bot-api-extract:/out/bin/telegram-bot-api \
+docker cp "${CONTAINER_NAME}:/out/bin/telegram-bot-api" \
   "$DIST_DIR/telegram-bot-api-linux-amd64"
 
 chmod +x "$DIST_DIR/telegram-bot-api-linux-amd64"

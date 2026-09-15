@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
+from threading import Event
 from urllib.parse import urlsplit
+
+from .processes import run_command
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -14,14 +16,21 @@ def is_tiktok_photo_url(url: str) -> bool:
     return (host == "tiktok.com" or host.endswith(".tiktok.com")) and "/photo/" in parsed.path
 
 
-def download_tiktok_photos(url: str, output_dir: str | Path) -> list[Path]:
+def download_tiktok_photos(
+    url: str,
+    output_dir: str | Path,
+    *,
+    cancel_event: Event | None = None,
+    timeout: int = 120,
+) -> list[Path]:
     destination = Path(output_dir).resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
+    result = run_command(
         [
             sys.executable,
             "-m",
             "gallery_dl",
+            "--quiet",
             "--no-mtime",
             "-D",
             str(destination),
@@ -29,10 +38,8 @@ def download_tiktok_photos(url: str, output_dir: str | Path) -> list[Path]:
             "extractor.tiktok.archive=null",
             url,
         ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
+        cancel_event=cancel_event,
+        deadline_seconds=timeout,
     )
     files = sorted(
         path

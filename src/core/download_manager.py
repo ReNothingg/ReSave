@@ -6,7 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from ..utils.presentation import panel, user_error
-from .media_downloader import DownloadCancelled
+from .errors import DownloadCancelled
 from .models import ACTIVE_STATUSES, DownloadTask, TaskStatus
 from .telegram_gateway import TelegramGateway
 from .user_stats import UserStatsManager
@@ -90,15 +90,18 @@ class DownloadManager:
         self._workers.clear()
         self._progress_task = None
         self._tasks.clear()
+        while not self._queue.empty():
+            self._queue.get_nowait()
+            self._queue.task_done()
         logger.info("Download manager stopped")
 
     async def enqueue(self, task: DownloadTask) -> int:
         if not self._started:
             raise RuntimeError("Менеджер загрузок ещё не запущен")
+        if task.task_id in self._tasks:
+            raise ValueError("Task is already queued")
         active_for_user = sum(
-            1
-            for current in self._tasks.values()
-            if current.user_id == task.user_id and current.status in ACTIVE_STATUSES
+            1 for current in self._tasks.values() if current.user_id == task.user_id
         )
         if active_for_user >= self.max_tasks_per_user:
             raise UserTaskLimitError(
@@ -113,7 +116,7 @@ class DownloadManager:
     def snapshot(
         self, *, user_id: int | None = None, chat_id: int | None = None
     ) -> list[DownloadTask]:
-        tasks = list(self._tasks.values())
+        tasks = [task for task in self._tasks.values() if task.status in ACTIVE_STATUSES]
         if user_id is not None:
             tasks = [task for task in tasks if task.user_id == user_id]
         if chat_id is not None:
@@ -140,72 +143,95 @@ class DownloadManager:
         while True:
             task = await self._queue.get()
             try:
-                if task.cancel_event.is_set():
-                    raise DownloadCancelled("Загрузка отменена пользователем")
-                task.status = TaskStatus.DOWNLOADING
-                task.phase = "Подготовка загрузки"
-                task.started_at = time.time()
-                await self.processor(task)
-                if task.cancel_event.is_set():
-                    raise DownloadCancelled("Загрузка отменена пользователем")
-                task.status = TaskStatus.COMPLETED
-                task.phase = "Готово"
-                task.completed_at = time.time()
-                if not task.silent:
-                    try:
-                        await self.telegram.delete_status(task.chat_id, task.status_message_id)
-                    except Exception as exc:
-                        logger.debug("Cannot delete completed task status: %s", exc)
-            except asyncio.CancelledError:
-                task.cancel()
-                raise
-            except DownloadCancelled:
-                task.status = TaskStatus.CANCELLED
-                task.phase = "Отменено"
-                if not task.silent and self._started:
-                    try:
-                        await self.telegram.edit_status(
-                            task.chat_id,
-                            task.status_message_id,
-                            panel("Загрузка отменена", icon="✕"),
-                        )
-                    except Exception as exc:
-                        logger.debug("Cannot edit cancelled task status: %s", exc)
-            except Exception as exc:
-                task.status = TaskStatus.FAILED
-                task.error = str(exc)
-                task.completed_at = time.time()
-                logger.exception("Task %s failed in worker %s", task.task_id, worker_id)
-                try:
-                    await asyncio.to_thread(self.stats.record_failed_download, task.user_id)
-                except Exception as stats_exc:
-                    logger.error("Cannot record failed task: %s", stats_exc)
-                if not task.silent:
-                    try:
-                        await self.telegram.edit_status(
-                            task.chat_id,
-                            task.status_message_id,
-                            user_error(exc),
-                        )
-                    except Exception as status_exc:
-                        logger.debug("Cannot report failed task status: %s", status_exc)
+                await self._execute_task(task, worker_id)
             finally:
                 self._tasks.pop(task.task_id, None)
                 self._queue.task_done()
 
+    async def _execute_task(self, task: DownloadTask, worker_id: int) -> None:
+        try:
+            await self._process_task(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            task.completed_at = time.time()
+            raise
+        except DownloadCancelled:
+            await self._mark_cancelled(task)
+        except Exception as exc:
+            await self._mark_failed(task, worker_id, exc)
+
+    async def _process_task(self, task: DownloadTask) -> None:
+        if task.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем")
+        task.status = TaskStatus.DOWNLOADING
+        task.phase = "Подготовка загрузки"
+        task.started_at = time.time()
+        await self.processor(task)
+        if task.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем")
+        task.status = TaskStatus.COMPLETED
+        task.phase = "Готово"
+        task.completed_at = time.time()
+        if task.silent:
+            return
+        try:
+            await self.telegram.delete_status(task.chat_id, task.status_message_id)
+        except Exception as exc:
+            logger.debug("Cannot delete completed task status: %s", exc)
+
+    async def _mark_cancelled(self, task: DownloadTask) -> None:
+        task.status = TaskStatus.CANCELLED
+        task.phase = "Отменено"
+        task.completed_at = time.time()
+        if task.silent or not self._started:
+            return
+        try:
+            await self.telegram.edit_status(
+                task.chat_id,
+                task.status_message_id,
+                panel("Загрузка отменена"),
+            )
+        except Exception as exc:
+            logger.debug("Cannot edit cancelled task status: %s", exc)
+
+    async def _mark_failed(self, task: DownloadTask, worker_id: int, exc: Exception) -> None:
+        task.status = TaskStatus.FAILED
+        task.error = str(exc)
+        task.completed_at = time.time()
+        logger.exception("Task %s failed in worker %s", task.task_id, worker_id)
+        try:
+            await asyncio.to_thread(self.stats.record_failed_download, task.user_id)
+        except Exception as stats_exc:
+            logger.error("Cannot record failed task: %s", stats_exc)
+        try:
+            if task.silent:
+                await self.telegram.send_message(
+                    task.chat_id,
+                    user_error(exc),
+                    reply_parameters=self.telegram._reply(task.reply_to_message_id),
+                )
+            else:
+                await self.telegram.edit_status(
+                    task.chat_id,
+                    task.status_message_id,
+                    user_error(exc),
+                )
+        except Exception as status_exc:
+            logger.debug("Cannot report failed task status: %s", status_exc)
+
     async def _progress_loop(self) -> None:
-        last_progress: dict[str, float] = {}
+        last_progress: dict[str, tuple] = {}
         while True:
             await asyncio.sleep(self.progress_update_seconds)
             for task in list(self._tasks.values()):
                 if task.silent or task.status not in ACTIVE_STATUSES:
                     continue
-                previous = last_progress.get(task.task_id, -1.0)
-                if task.progress == previous and task.status == TaskStatus.DOWNLOADING:
+                current = (task.status, task.phase, round(task.progress, 2), task.speed, task.eta)
+                if current == last_progress.get(task.task_id):
                     continue
-                last_progress[task.task_id] = task.progress
                 try:
                     await self.progress_reporter(task)
+                    last_progress[task.task_id] = current
                 except Exception as exc:
                     logger.debug("Cannot report task %s progress: %s", task.task_id, exc)
             active_ids = set(self._tasks)

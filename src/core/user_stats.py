@@ -34,8 +34,11 @@ class UserStatsManager:
     def __init__(
         self, db_path: str | Path | None = None, legacy_stats_file: str | Path = "user_stats.json"
     ):
-        self.db_path = Path(db_path or config.STATS_DB_PATH)
-        self.legacy_stats_file = Path(legacy_stats_file)
+        self.db_path = Path(db_path or config.SETTINGS.stats_db_path)
+        legacy_path = Path(legacy_stats_file).expanduser()
+        self.legacy_stats_file = (
+            legacy_path if legacy_path.is_absolute() else config.BASE_DIR / legacy_path
+        ).resolve()
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(
@@ -66,22 +69,43 @@ class UserStatsManager:
                 )
                 """
             )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
 
     def _migrate_legacy(self) -> None:
+        with self._lock:
+            migrated = self._connection.execute(
+                "SELECT 1 FROM app_meta WHERE key = 'legacy_stats_migrated'"
+            ).fetchone()
+        if migrated:
+            return
         if not self.legacy_stats_file.exists():
             return
         with self._lock:
             count = self._connection.execute("SELECT COUNT(*) FROM user_stats").fetchone()[0]
         if count:
+            self._mark_legacy_migrated()
             return
         try:
             data = json.loads(self.legacy_stats_file.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.warning("Cannot read legacy stats %s: %s", self.legacy_stats_file, exc)
             return
+        if not isinstance(data, dict):
+            logger.warning("Legacy stats %s must contain a JSON object", self.legacy_stats_file)
+            return
 
         with self._lock, self._connection:
             for raw_user_id, item in data.items():
+                if not isinstance(item, dict):
+                    logger.warning("Skipping malformed legacy stats for %s", raw_user_id)
+                    continue
                 try:
                     self._connection.execute(
                         """
@@ -101,6 +125,15 @@ class UserStatsManager:
                     )
                 except (TypeError, ValueError) as exc:
                     logger.warning("Skipping malformed legacy stats for %s: %s", raw_user_id, exc)
+            self._connection.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('legacy_stats_migrated', '1')"
+            )
+
+    def _mark_legacy_migrated(self) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('legacy_stats_migrated', '1')"
+            )
 
     def ensure_user(self, user_id: int) -> None:
         if user_id <= 0:
@@ -166,23 +199,14 @@ class UserStatsManager:
 
     def clear_all_stats(self) -> None:
         with self._lock, self._connection:
-            self._connection.execute("DELETE FROM user_stats")
+            self._connection.execute(
+                """
+                UPDATE user_stats SET downloads_count=0, total_videos=0,
+                    total_audios=0, total_other_downloads=0, failed_downloads=0,
+                    total_size_mb=0, first_download_date=NULL, last_download_date=NULL
+                """
+            )
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
-
-
-_stats_manager: UserStatsManager | None = None
-
-
-def get_stats_manager() -> UserStatsManager:
-    global _stats_manager
-    if _stats_manager is None:
-        _stats_manager = UserStatsManager()
-    return _stats_manager
-
-
-def set_stats_manager(manager: UserStatsManager | None) -> None:
-    global _stats_manager
-    _stats_manager = manager

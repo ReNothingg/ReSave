@@ -39,7 +39,35 @@ def normalize_url(value: str) -> str | None:
     if parsed.username or parsed.password:
         return None
 
-    host = parsed.hostname.lower().rstrip(".")
+    normalized_host = _normalize_host(parsed.hostname)
+    if normalized_host is None:
+        return None
+    ascii_host, address = normalized_host
+
+    twitter_url = _canonical_twitter_url(parsed.scheme, ascii_host, parsed.path)
+    if twitter_url:
+        return twitter_url
+
+    try:
+        port = f":{parsed.port}" if parsed.port else ""
+    except ValueError:
+        return None
+    netloc_host = f"[{ascii_host}]" if address and address.version == 6 else ascii_host
+    return urlunsplit(
+        (
+            parsed.scheme.lower(),
+            f"{netloc_host}{port}",
+            parsed.path or "/",
+            parsed.query,
+            "",
+        )
+    )
+
+
+def _normalize_host(
+    raw_host: str,
+) -> tuple[str, ipaddress.IPv4Address | ipaddress.IPv6Address | None] | None:
+    host = raw_host.lower().rstrip(".")
     if host == "localhost" or host.endswith(".localhost"):
         return None
     try:
@@ -50,14 +78,16 @@ def normalize_url(value: str) -> str | None:
         return None
     if address is None and ("." not in host or host.endswith((".local", ".internal", ".lan"))):
         return None
-
     try:
         ascii_host = host.encode("idna").decode("ascii")
     except UnicodeError:
         return None
     if any(not label or len(label) > 63 for label in ascii_host.split(".")):
         return None
+    return ascii_host, address
 
+
+def _canonical_twitter_url(scheme: str, host: str, path: str) -> str | None:
     twitter_hosts = {
         "x.com",
         "www.x.com",
@@ -66,27 +96,12 @@ def normalize_url(value: str) -> str | None:
         "twitter.com",
         "www.twitter.com",
     }
-    if ascii_host in twitter_hosts:
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 3 and parts[1] in {"status", "statuses"} and parts[2].isdigit():
-            return urlunsplit(
-                (parsed.scheme, "twitter.com", f"/{parts[0]}/status/{parts[2]}", "", "")
-            )
-
-    try:
-        port = f":{parsed.port}" if parsed.port else ""
-    except ValueError:
+    if host not in twitter_hosts:
         return None
-    normalized_host = f"[{ascii_host}]" if address and address.version == 6 else ascii_host
-    return urlunsplit(
-        (
-            parsed.scheme.lower(),
-            f"{normalized_host}{port}",
-            parsed.path or "/",
-            parsed.query,
-            "",
-        )
-    )
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 3 or parts[1] not in {"status", "statuses"} or not parts[2].isdigit():
+        return None
+    return urlunsplit((scheme, "twitter.com", f"/{parts[0]}/status/{parts[2]}", "", ""))
 
 
 def extract_url(text: str, entities=None, caption_entities=None) -> str | None:
@@ -99,15 +114,24 @@ def extract_url(text: str, entities=None, caption_entities=None) -> str | None:
 
 async def is_public_url_target(url: str) -> bool:
     parsed = urlsplit(url)
-    if not parsed.hostname:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
         return False
     try:
-        addresses = await asyncio.get_running_loop().getaddrinfo(
-            parsed.hostname,
-            parsed.port or (443 if parsed.scheme == "https" else 80),
-            type=socket.SOCK_STREAM,
-        )
+        async with asyncio.timeout(5):
+            addresses = await asyncio.get_running_loop().getaddrinfo(
+                parsed.hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
     except (OSError, ValueError):
         return False
     resolved = {item[4][0] for item in addresses}
-    return bool(resolved) and all(ipaddress.ip_address(item).is_global for item in resolved)
+    try:
+        return bool(resolved) and all(ipaddress.ip_address(item).is_global for item in resolved)
+    except ValueError:
+        return False

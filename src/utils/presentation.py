@@ -1,87 +1,75 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import math
 from html import escape
 
-
-def panel(title: str, lines: list[str] | tuple[str, ...] = (), *, icon: str = "") -> str:
-    heading = f"{icon} <b>{escape(title)}</b>".strip()
-    body = "\n".join(escape(str(line)) for line in lines)
-    return f"{heading}\n━━━━━━━━━━━━\n{body}" if body else heading
-
-
-def rich_panel(
-    title: str,
-    *,
-    lead: str = "",
-    sections: Sequence[tuple[str, Sequence[str]]] = (),
-    footer: str = "⚡ ReSave",
-) -> str:
-    """Build a native Bot API Rich Message using only supported rich HTML tags."""
-    blocks = [f"<h1>{escape(title)}</h1>"]
-    if lead:
-        blocks.append(f"<blockquote>{escape(lead)}</blockquote>")
-    for heading, items in sections:
-        blocks.append(f"<h3>{escape(heading)}</h3>")
-        if items:
-            values = "".join(f"<li>{escape(str(item))}</li>" for item in items)
-            blocks.append(f"<ul>{values}</ul>")
-    blocks.extend(("<hr>", f"<footer>{escape(footer)}</footer>"))
-    return "".join(blocks)
+ERROR_DETAILS = (
+    (("проверка ссылок занята",), "Ещё проверяю другую ссылку. Попробуйте через минуту."),
+    (("cancel", "отмен"), "Загрузка отменена."),
+    (("timeout", "timed out", "no progress"), "Сайт не ответил вовремя. Попробуйте позже."),
+    (("disk quota", "no space"), "На сервере закончилось место. Попробуйте позже."),
+    (
+        ("too large", "file size", "exceed", "превыш"),
+        "Файл слишком большой. Выберите качество ниже.",
+    ),
+    (("private", "sign in", "login", "cookies"), "Публикация закрыта или требует входа в аккаунт."),
+    (
+        ("unsupported url", "not a valid url"),
+        "Не удалось найти медиа. Пришлите ссылку на саму публикацию.",
+    ),
+    (("video unavailable", "404", "not found"), "Публикация удалена или недоступна."),
+    (("requested format", "format is not available"), "Это качество недоступно. Выберите другое."),
+    (
+        ("403", "forbidden", "unexpected response", "tiktok fallback"),
+        "Сайт не разрешил скачать публикацию. Попробуйте позже.",
+    ),
+    (("ffmpeg", "worker exited"), "Не удалось обработать файл. Попробуйте другое качество."),
+)
 
 
-def progress_bar(progress: float, width: int = 12) -> str:
-    value = min(1.0, max(0.0, progress))
+def clip(value: object, limit: int = 200) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def panel(title: str, lines: list[str] | tuple[str, ...] = ()) -> str:
+    heading = f"<b>{escape(clip(title, 300))}</b>"
+    body = "\n".join(escape(str(line)) for line in lines).strip()
+    return f"{heading}\n\n{body}" if body else heading
+
+
+def format_duration(value: object) -> str:
+    try:
+        seconds = max(0, round(float(value)))
+    except (OverflowError, TypeError, ValueError):
+        return ""
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}:{minutes:02}:{seconds:02}" if hours else f"{minutes}:{seconds:02}"
+
+
+def progress_bar(progress: float, width: int = 10) -> str:
+    value = min(1.0, max(0.0, progress)) if math.isfinite(progress) else 0.0
     filled = round(value * width)
-    return f"{'█' * filled}{'░' * (width - filled)} {value * 100:.0f}%"
+    return f"{'▰' * filled}{'▱' * (width - filled)} {value:.0%}"
 
 
 def media_caption(title: str, url: str, *, kind: str, size_mb: float | None = None) -> str:
-    icons = {
-        "video": "🎬",
-        "audio": "🎵",
-        "gif": "✨",
-        "thumbnail": "🖼️",
-        "subtitles": "📝",
-        "tiktok_photo": "🖼️",
-    }
-    safe_title = escape((title or "media")[:400])
-    safe_url = escape(url, quote=True)
-    lines = [f"{icons.get(kind, '📁')} <b>{safe_title}</b>"]
-    if size_mb is not None:
-        lines.append(f"📦 {size_mb:.1f} MB")
-    lines.extend([f'🔗 <a href="{safe_url}">Открыть оригинал</a>', "⚡ @ReSafeBot"])
+    lines = [f"<b>{escape(clip(title or 'Файл', 240))}</b>"]
+    details = [f"{size_mb:.1f} МБ"] if size_mb is not None else []
+    details.append(f'<a href="{escape(url, quote=True)}">Источник</a>')
+    lines.append(" · ".join(details))
     return "\n\n".join(lines)
 
 
 def user_error(exc: BaseException) -> str:
     value = str(exc).lower()
-    if "worker exited" in value:
-        detail = "Обработка прервана сервером. Попробуйте файл меньшего размера или качество ниже."
-    elif "unexpected response from webpage" in value or "tiktok fallback" in value:
-        detail = "TikTok не отдал данные публикации. Попробуйте полную ссылку на видео."
-    elif "private" in value:
-        detail = "Видео приватное или недоступно для аккаунта бота."
-    elif "unsupported url" in value or "not a valid url" in value:
-        detail = "Эта ссылка не поддерживается. Отправьте прямую ссылку на публикацию."
-    elif "sign in" in value or "login" in value or "cookies" in value:
-        detail = "Источник требует авторизацию. Проверьте актуальность cookies.txt."
-    elif "too large" in value or "file size" in value or "превышает" in value:
-        detail = "Файл больше доступного лимита Telegram. Выберите качество ниже."
-    elif "ffmpeg" in value:
-        detail = "FFmpeg недоступен или не смог обработать медиа."
-    elif "403" in value or "forbidden" in value:
-        detail = (
-            "Источник отклонил загрузку. Cookies обновлены не были или ссылка временно защищена."
-        )
-    elif "requested format" in value or "format is not available" in value:
-        detail = "Выбранное качество недоступно. Попробуйте другое качество или повторите позже."
-    elif "disk quota" in value or "no space" in value:
-        detail = "На сервере закончилось место. Администратор уже получил техническую ошибку."
-    elif "cancel" in value or "отмен" in value:
-        detail = "Загрузка отменена."
-    elif "timeout" in value or "no progress" in value:
-        detail = "Источник отвечал слишком долго. Попробуйте ещё раз позже."
-    else:
-        detail = "Не удалось обработать медиа. Проверьте ссылку и повторите попытку."
-    return panel("Ошибка", [detail], icon="❌")
+    detail = next(
+        (
+            message
+            for markers, message in ERROR_DETAILS
+            if any(marker in value for marker in markers)
+        ),
+        "Не удалось скачать файл. Попробуйте ещё раз или пришлите другую ссылку.",
+    )
+    return panel("Не получилось скачать", [detail])

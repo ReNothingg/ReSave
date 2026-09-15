@@ -6,7 +6,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src import version_guard as _version_guard  # noqa: F401
+from src.version_guard import ensure_supported_python
+
+ensure_supported_python()
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -86,6 +88,10 @@ class Settings:
     def effective_upload_limit(self) -> int:
         return min(self.max_file_size, self.bot_api_upload_limit)
 
+    @property
+    def effective_send_as_doc_limit(self) -> int:
+        return min(self.send_as_doc_limit, self.effective_upload_limit)
+
 
 def build_settings() -> Settings:
     base_url = _text("BOT_API_BASE_URL").rstrip("/")
@@ -109,7 +115,11 @@ def build_settings() -> Settings:
         send_as_doc_limit=_integer("SEND_AS_DOC_LIMIT", api_limit, minimum=1),
         max_concurrent_downloads=_integer("MAX_CONCURRENT_DOWNLOADS", 2, minimum=1),
         max_queue_size=_integer("MAX_QUEUE_SIZE", 100, minimum=1),
-        max_tasks_per_user=_integer("MAX_TASKS_PER_USER", 10, minimum=1),
+        max_tasks_per_user=_integer(
+            "MAX_TASKS_PER_USER" if _text("MAX_TASKS_PER_USER") else "MAX_DOWNLOADS_PER_USER",
+            10,
+            minimum=1,
+        ),
         max_playlist_items=_integer("MAX_PLAYLIST_ITEMS", 25, minimum=1),
         selection_ttl_seconds=_integer("SELECTION_TTL_SECONDS", 900, minimum=60),
         download_timeout_seconds=_integer("DOWNLOAD_TIMEOUT_SECONDS", 1800, minimum=30),
@@ -135,22 +145,3 @@ def validate_settings(settings: Settings | None = None) -> Settings:
 
 
 SETTINGS = build_settings()
-
-# Compatibility constants for deployment scripts and third-party imports.
-BOT_TOKEN = SETTINGS.bot_token
-ADMIN_IDS = SETTINGS.admin_ids
-TEMP_DIR = str(SETTINGS.temp_dir)
-STATS_DB_PATH = str(SETTINGS.stats_db_path)
-DB_NAME = STATS_DB_PATH
-COOKIES_FILE = str(SETTINGS.cookies_file)
-LOG_LEVEL = SETTINGS.log_level
-BOT_API_BASE_URL = SETTINGS.bot_api_base_url
-BOT_API_IS_LOCAL = SETTINGS.bot_api_is_local
-BOT_API_USE_FILE_URI = SETTINGS.bot_api_use_file_uri
-BOT_API_UPLOAD_LIMIT = SETTINGS.bot_api_upload_limit
-MAX_FILE_SIZE = SETTINGS.max_file_size
-SEND_AS_DOC_LIMIT = SETTINGS.send_as_doc_limit
-MAX_CONCURRENT_DOWNLOADS = SETTINGS.max_concurrent_downloads
-DOWNLOAD_TIMEOUT_SECONDS = SETTINGS.download_timeout_seconds
-DOWNLOAD_STALL_TIMEOUT_SECONDS = SETTINGS.download_stall_timeout_seconds
-DOWNLOAD_RATE_LIMIT_BYTES = SETTINGS.download_rate_limit_bytes

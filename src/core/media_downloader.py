@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
 import time
-from functools import lru_cache
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +17,13 @@ from yt_dlp.utils import determine_ext
 
 from config import Settings
 
+from .errors import DownloadCancelled, FileTooLarge
+from .extractor import youtube_client
+from .media_tools import media_tool as _media_tool
 from .models import DownloadAction, DownloadTask, DownloadVariant
+from .processes import run_command
 from .tiktok_fallback import (
+    TikTokFallbackError,
     canonical_tiktok_url,
     download_tiktok_video,
     fetch_tiktok_video_info,
@@ -28,42 +32,32 @@ from .tiktok_fallback import (
 )
 
 logger = logging.getLogger(__name__)
+MIN_FREE_SPACE_BYTES = 64 * 1024 * 1024
 
 
-@lru_cache(maxsize=2)
-def _media_tool(name: str) -> str | None:
-    discovered = shutil.which(name)
-    if discovered:
-        return discovered
-
-    candidates: list[Path] = []
-    configured = os.getenv("FFMPEG_LOCATION", "").strip()
-    if configured:
-        location = Path(configured).expanduser()
-        candidates.append(location / name if location.is_dir() else location.with_name(name))
-
-    candidates.append(Path.home() / ".local" / "bin" / name)
-    ffmpeg_home = Path.home() / "ffmpeg"
-    if ffmpeg_home.is_dir():
-        candidates.extend(sorted(ffmpeg_home.glob(f"*/{name}"), reverse=True))
-
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
+@dataclass(slots=True)
+class _ProgressState:
+    deadline: float
+    last_activity: float
+    last_bytes: int = -1
+    next_resource_check: float = 0.0
 
 
-class DownloadCancelled(RuntimeError):
-    pass
-
-
-class FileTooLarge(RuntimeError):
-    pass
+@dataclass(frozen=True, slots=True)
+class _VariantAttempt:
+    result: Path | None = None
+    errors: tuple[str, ...] = ()
+    too_large: bool = False
+    used_tiktok_fallback: bool = False
 
 
 class MediaDownloader:
     def __init__(self, settings: Settings):
         self.settings = settings
+
+    @property
+    def ffmpeg_available(self) -> bool:
+        return _media_tool("ffmpeg") is not None
 
     def _common_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -83,8 +77,6 @@ class MediaDownloader:
             "noresizebuffer": True,
             "http_chunk_size": 5 * 1024 * 1024,
             "concurrent_fragment_downloads": 1,
-            # Shared hosts often advertise IPv6 even when the route is unstable.
-            # A failed IPv6 route commonly surfaces in yt-dlp as HTTP 403.
             "source_address": "0.0.0.0",
             "http_headers": {
                 "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
@@ -97,30 +89,18 @@ class MediaDownloader:
         ffmpeg = _media_tool("ffmpeg")
         if ffmpeg:
             options["ffmpeg_location"] = str(Path(ffmpeg).parent)
-            # yt-dlp's native HLS downloader may create an empty file for some
-            # Pinterest/CDN manifests with conflicting byte ranges. ffmpeg handles
-            # those manifests correctly and also merges separate audio/video tracks.
             options["external_downloader"] = {"m3u8": "ffmpeg"}
         return options
 
     def _size_filter(self, info: dict[str, Any], *, incomplete: bool) -> str | None:
         if incomplete:
             return None
-        formats = info.get("requested_formats") or [info]
-        estimates: list[int] = []
-        for media_format in formats:
-            size = media_format.get("filesize") or media_format.get("filesize_approx")
-            if not size:
-                duration = media_format.get("duration") or info.get("duration")
-                bitrate = (
-                    media_format.get("tbr") or media_format.get("vbr") or media_format.get("abr")
-                )
-                if duration and bitrate:
-                    size = float(duration) * float(bitrate) * 1000 / 8
-            if size:
-                estimates.append(round(float(size)))
-
-        estimated_size = sum(estimates) or info.get("filesize") or info.get("filesize_approx")
+        formats = [
+            item for item in info.get("requested_formats") or [info] if isinstance(item, dict)
+        ]
+        estimated_size = sum(self._estimated_format_size(item, info) for item in formats)
+        if not estimated_size:
+            estimated_size = self._number(info.get("filesize") or info.get("filesize_approx"))
         safe_limit = max(1, round(self.settings.effective_upload_limit * 0.97) - 1024 * 1024)
         if estimated_size and estimated_size > safe_limit:
             return (
@@ -129,6 +109,25 @@ class MediaDownloader:
             )
         return None
 
+    @classmethod
+    def _estimated_format_size(cls, media_format: dict[str, Any], info: dict[str, Any]) -> int:
+        explicit = cls._number(media_format.get("filesize") or media_format.get("filesize_approx"))
+        if explicit:
+            return round(explicit)
+        duration = cls._number(media_format.get("duration") or info.get("duration"))
+        bitrate = cls._number(
+            media_format.get("tbr") or media_format.get("vbr") or media_format.get("abr")
+        )
+        return round(duration * bitrate * 1000 / 8) if duration and bitrate else 0
+
+    @staticmethod
+    def _number(value: object) -> float:
+        try:
+            parsed = float(value)
+        except (OverflowError, TypeError, ValueError):
+            return 0.0
+        return parsed if 0 < parsed < float("inf") else 0.0
+
     @staticmethod
     def _clear(directory: Path) -> None:
         for item in directory.iterdir():
@@ -136,6 +135,22 @@ class MediaDownloader:
                 shutil.rmtree(item, ignore_errors=True)
             else:
                 item.unlink(missing_ok=True)
+
+    def _check_work_directory(self, task: DownloadTask) -> None:
+        if not task.work_dir:
+            return
+        work_dir = Path(task.work_dir)
+        if shutil.disk_usage(work_dir).free < MIN_FREE_SPACE_BYTES:
+            raise OSError("No space left for media processing")
+        total_size = 0
+        for path in work_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    total_size += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        if total_size > self.settings.effective_upload_limit * 3:
+            raise FileTooLarge("Temporary files exceed the safe processing limit")
 
     @staticmethod
     def _files(directory: Path) -> list[Path]:
@@ -175,10 +190,15 @@ class MediaDownloader:
             payload = json.loads(result.stdout or "{}")
         except (OSError, subprocess.SubprocessError, ValueError):
             return set()
+        if not isinstance(payload, dict):
+            return set()
+        streams = payload.get("streams")
+        if not isinstance(streams, list):
+            return set()
         return {
             str(stream["codec_type"])
-            for stream in payload.get("streams") or []
-            if stream.get("codec_type")
+            for stream in streams
+            if isinstance(stream, dict) and stream.get("codec_type")
         }
 
     @staticmethod
@@ -203,11 +223,14 @@ class MediaDownloader:
                 text=True,
                 timeout=15,
             )
-            streams = json.loads(result.stdout or "{}").get("streams") or []
-            if streams:
+            payload = json.loads(result.stdout or "{}")
+            if not isinstance(payload, dict):
+                return (0, 0)
+            streams = payload.get("streams")
+            if isinstance(streams, list) and streams and isinstance(streams[0], dict):
                 return (int(streams[0].get("width") or 0), int(streams[0].get("height") or 0))
         except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-            pass
+            return (0, 0)
         return (0, 0)
 
     def _select_completed_media(self, task: DownloadTask, work_dir: Path) -> Path:
@@ -223,57 +246,88 @@ class MediaDownloader:
         required_stream = "audio" if task.action == DownloadAction.AUDIO else "video"
         for path in files:
             stream_types = self._stream_types(path)
-            # A broken or unavailable ffprobe must not discard a completed file.
-            # Intermediate video/audio tracks are filtered out above already.
             if not stream_types or required_stream in stream_types:
                 return path
         raise FileNotFoundError(f"yt-dlp не создал итоговый файл с потоком типа {required_stream}")
 
     def _progress_hook(self, task: DownloadTask):
         started = time.monotonic()
-        deadline = started + self.settings.download_timeout_seconds
-        last_activity = started
-        last_bytes = -1
+        elapsed = max(0.0, time.time() - task.started_at) if task.started_at else 0.0
+        state = _ProgressState(
+            deadline=started + max(0.0, self.settings.download_timeout_seconds - elapsed),
+            last_activity=started,
+            next_resource_check=started,
+        )
 
         def hook(data: dict[str, Any]) -> None:
-            nonlocal last_activity, last_bytes
             now = time.monotonic()
-            if task.cancel_event.is_set():
-                raise DownloadCancelled("Загрузка отменена пользователем")
-            if now >= deadline:
-                raise TimeoutError("Download timeout")
-
+            self._validate_progress_state(task, state, now)
             if data.get("status") == "downloading":
-                downloaded = int(data.get("downloaded_bytes") or 0)
-                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                if downloaded != last_bytes:
-                    last_bytes = downloaded
-                    last_activity = now
-                if total:
-                    task.progress = min(0.99, max(0.0, downloaded / int(total)))
-                task.speed = data.get("_speed_str") or None
-                eta = data.get("eta")
-                task.eta = int(eta) if isinstance(eta, (int, float)) else None
-                task.phase = "Скачивание"
+                self._update_download_progress(task, state, data, now)
             elif data.get("status") == "finished":
                 task.progress = 0.99
                 task.phase = "Обработка"
-                last_activity = now
-
-            if now - last_activity >= self.settings.download_stall_timeout_seconds:
+                state.last_activity = now
+            if now - state.last_activity >= self.settings.download_stall_timeout_seconds:
                 raise TimeoutError("Download made no progress")
 
         return hook
 
+    def _validate_progress_state(
+        self, task: DownloadTask, state: _ProgressState, now: float
+    ) -> None:
+        if task.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем")
+        if now >= state.deadline:
+            raise TimeoutError("Download timeout")
+        if now >= state.next_resource_check:
+            self._check_work_directory(task)
+            state.next_resource_check = now + 1
+
+    @staticmethod
+    def _update_download_progress(
+        task: DownloadTask,
+        state: _ProgressState,
+        data: dict[str, Any],
+        now: float,
+    ) -> None:
+        downloaded = max(0, round(MediaDownloader._number(data.get("downloaded_bytes"))))
+        total = round(
+            MediaDownloader._number(data.get("total_bytes") or data.get("total_bytes_estimate"))
+        )
+        if downloaded != state.last_bytes:
+            state.last_bytes = downloaded
+            state.last_activity = now
+        if total:
+            task.progress = min(0.99, max(0.0, downloaded / total))
+        task.speed = str(data["_speed_str"]) if data.get("_speed_str") else None
+        eta = round(MediaDownloader._number(data.get("eta")))
+        task.eta = eta or None
+        task.phase = "Скачивание"
+
     def _download_sync(self, task: DownloadTask, variant: DownloadVariant) -> Path:
+        self._check_work_directory(task)
+        if (
+            task.started_at
+            and time.time() - task.started_at >= self.settings.download_timeout_seconds
+        ):
+            raise TimeoutError("Download timeout")
         options = self._common_options()
+        size_rejected = False
+
+        def size_filter(info: dict, *, incomplete: bool) -> str | None:
+            nonlocal size_rejected
+            reason = self._size_filter(info, incomplete=incomplete)
+            size_rejected = size_rejected or reason is not None
+            return reason
+
         options.update(
             {
                 "format": variant.format_selector,
                 "outtmpl": variant.output_template,
                 "merge_output_format": "mp4",
                 "progress_hooks": [self._progress_hook(task)],
-                "match_filter": self._size_filter,
+                "match_filter": size_filter,
             }
         )
         postprocessors = list(variant.postprocessors)
@@ -282,11 +336,16 @@ class MediaDownloader:
         if postprocessors:
             options["postprocessors"] = postprocessors
 
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with youtube_client(options) as ydl:
             ydl.download([task.url])
 
         work_dir = Path(task.work_dir or "")
-        result = self._select_completed_media(task, work_dir)
+        try:
+            result = self._select_completed_media(task, work_dir)
+        except FileNotFoundError as exc:
+            if size_rejected:
+                raise FileTooLarge("Estimated file size exceeds limit") from exc
+            raise
         if result.stat().st_size > self.settings.effective_upload_limit:
             raise FileTooLarge(
                 f"File size {result.stat().st_size} exceeds Telegram limit "
@@ -295,13 +354,18 @@ class MediaDownloader:
         return result
 
     def _download_tiktok_sync(self, task: DownloadTask, work_dir: Path) -> Path:
-        source = download_tiktok_video(
-            task.url,
-            work_dir,
-            known_id=task.info.get("id"),
-            cancel_event=task.cancel_event,
-            timeout=self.settings.download_timeout_seconds,
-        )
+        try:
+            source = download_tiktok_video(
+                task.url,
+                work_dir,
+                known_id=task.info.get("id"),
+                cancel_event=task.cancel_event,
+                timeout=self.settings.download_timeout_seconds,
+            )
+        except TikTokFallbackError as exc:
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем") from exc
+            raise
         if task.action != DownloadAction.AUDIO:
             return source
 
@@ -309,7 +373,7 @@ class MediaDownloader:
         if not ffmpeg:
             raise RuntimeError("FFmpeg is required to extract TikTok audio")
         target = work_dir / "media.mp3"
-        subprocess.run(
+        result = run_command(
             [
                 ffmpeg,
                 "-hide_banner",
@@ -325,82 +389,118 @@ class MediaDownloader:
                 "-y",
                 str(target),
             ],
-            check=True,
-            capture_output=True,
-            timeout=min(self.settings.download_timeout_seconds, 300),
+            cancel_event=task.cancel_event,
+            deadline_seconds=min(self.settings.download_timeout_seconds, 300),
         )
+        if result.returncode:
+            raise RuntimeError(f"FFmpeg conversion failed: {result.stderr[-1000:]}")
         source.unlink(missing_ok=True)
         return target
 
     async def download(self, task: DownloadTask, work_dir: Path) -> Path:
         task.work_dir = str(work_dir)
         if task.info.get("_tiktok_fallback"):
-            logger.info("Using gallery-dl TikTok fallback task=%s", task.task_id)
-            result = await asyncio.to_thread(self._download_tiktok_sync, task, work_dir)
-            if result.stat().st_size > self.settings.effective_upload_limit:
-                raise FileTooLarge(
-                    f"File size {result.stat().st_size} exceeds Telegram limit "
-                    f"{self.settings.effective_upload_limit}"
-                )
-            task.progress = 1.0
-            return result
+            return await self._download_tiktok(task, work_dir)
 
         errors: list[str] = []
+        too_large = False
         tiktok_fallback_attempted = False
         for variant in self.variants(task, work_dir / "media"):
-            if task.cancel_event.is_set():
-                raise DownloadCancelled("Загрузка отменена пользователем")
-            self._clear(work_dir)
-            task.phase = f"Скачивание: {variant.label}"
-            task.progress = 0.0
-            logger.info(
-                "Downloading task=%s action=%s variant=%s",
-                task.task_id,
-                task.action,
-                variant.label,
+            attempt = await self._attempt_variant(
+                task,
+                work_dir,
+                variant,
+                allow_tiktok_fallback=not tiktok_fallback_attempted,
             )
-            try:
-                result = await asyncio.to_thread(self._download_sync, task, variant)
-                task.progress = 1.0
-                return result
-            except DownloadCancelled:
-                raise
-            except (TimeoutError, FileTooLarge):
-                raise
-            except Exception as exc:
-                if (
-                    not tiktok_fallback_attempted
-                    and is_tiktok_url(task.url)
-                    and tiktok_video_id(task.url, str(exc), task.info.get("id"))
-                ):
-                    tiktok_fallback_attempted = True
-                    task.info["id"] = tiktok_video_id(task.url, str(exc), task.info.get("id"))
-                    logger.info("yt-dlp rejected TikTok; using gallery-dl task=%s", task.task_id)
-                    try:
-                        result = await asyncio.to_thread(self._download_tiktok_sync, task, work_dir)
-                        if result.stat().st_size > self.settings.effective_upload_limit:
-                            raise FileTooLarge(
-                                f"File size {result.stat().st_size} exceeds Telegram limit "
-                                f"{self.settings.effective_upload_limit}"
-                            )
-                        task.progress = 1.0
-                        return result
-                    except (DownloadCancelled, TimeoutError, FileTooLarge):
-                        raise
-                    except Exception as fallback_exc:
-                        logger.warning(
-                            "TikTok fallback failed task=%s: %s",
-                            task.task_id,
-                            fallback_exc,
-                        )
-                        errors.append(f"TikTok fallback: {fallback_exc}")
-                errors.append(f"{variant.label}: {exc}")
-                logger.warning("Variant failed task=%s: %s", task.task_id, errors[-1])
-                if not self._can_fallback(exc):
-                    raise
+            if attempt.result is not None:
+                return attempt.result
+            errors.extend(attempt.errors)
+            too_large = too_large or attempt.too_large
+            tiktok_fallback_attempted = tiktok_fallback_attempted or attempt.used_tiktok_fallback
 
+        if too_large:
+            raise FileTooLarge("Все доступные варианты превышают лимит Telegram")
         message = errors[-1] if errors else "нет доступных вариантов"
         raise RuntimeError(f"Не удалось скачать медиа: {message}")
+
+    async def _attempt_variant(
+        self,
+        task: DownloadTask,
+        work_dir: Path,
+        variant: DownloadVariant,
+        *,
+        allow_tiktok_fallback: bool,
+    ) -> _VariantAttempt:
+        if task.cancel_event.is_set():
+            raise DownloadCancelled("Загрузка отменена пользователем")
+        self._clear(work_dir)
+        task.phase = f"Скачивание: {variant.label}"
+        task.progress = 0.0
+        logger.info(
+            "Downloading task=%s action=%s variant=%s",
+            task.task_id,
+            task.action,
+            variant.label,
+        )
+        try:
+            return _VariantAttempt(result=await self._download_variant(task, variant))
+        except (DownloadCancelled, TimeoutError):
+            raise
+        except FileTooLarge as exc:
+            error = f"{variant.label}: {exc}"
+            logger.info("Variant is too large task=%s: %s", task.task_id, error)
+            return _VariantAttempt(errors=(error,), too_large=True)
+        except Exception as exc:
+            errors: list[str] = []
+            use_tiktok = self._can_use_tiktok_fallback(task, exc, allow_tiktok_fallback)
+            if use_tiktok:
+                fallback, fallback_error = await self._try_tiktok_fallback(task, work_dir, exc)
+                if fallback is not None:
+                    return _VariantAttempt(result=fallback, used_tiktok_fallback=True)
+                if fallback_error:
+                    errors.append(fallback_error)
+            error = f"{variant.label}: {exc}"
+            errors.append(error)
+            logger.warning("Variant failed task=%s: %s", task.task_id, error)
+            if not self._can_fallback(exc):
+                raise
+            return _VariantAttempt(errors=tuple(errors), used_tiktok_fallback=use_tiktok)
+
+    @staticmethod
+    def _can_use_tiktok_fallback(task: DownloadTask, exc: Exception, allowed: bool) -> bool:
+        return bool(
+            allowed
+            and is_tiktok_url(task.url)
+            and tiktok_video_id(task.url, str(exc), task.info.get("id"))
+        )
+
+    async def _download_variant(self, task: DownloadTask, variant: DownloadVariant) -> Path:
+        result = await asyncio.to_thread(self._download_sync, task, variant)
+        task.progress = 1.0
+        return result
+
+    async def _download_tiktok(self, task: DownloadTask, work_dir: Path) -> Path:
+        logger.info("Using gallery-dl TikTok fallback task=%s", task.task_id)
+        result = await asyncio.to_thread(self._download_tiktok_sync, task, work_dir)
+        self._validate_result_size(result)
+        task.progress = 1.0
+        return result
+
+    async def _try_tiktok_fallback(
+        self,
+        task: DownloadTask,
+        work_dir: Path,
+        original_error: Exception,
+    ) -> tuple[Path | None, str | None]:
+        task.info["id"] = tiktok_video_id(task.url, str(original_error), task.info.get("id"))
+        logger.info("yt-dlp rejected TikTok; using gallery-dl task=%s", task.task_id)
+        try:
+            return await self._download_tiktok(task, work_dir), None
+        except (DownloadCancelled, TimeoutError, FileTooLarge):
+            raise
+        except Exception as fallback_exc:
+            logger.warning("TikTok fallback failed task=%s: %s", task.task_id, fallback_exc)
+            return None, f"TikTok fallback: {fallback_exc}"
 
     def _download_subtitles_sync(self, task: DownloadTask, work_dir: Path) -> list[Path]:
         options = self._common_options()
@@ -409,15 +509,18 @@ class MediaDownloader:
                 "skip_download": True,
                 "writesubtitles": True,
                 "writeautomaticsub": True,
-                "subtitleslangs": ["ru", "en", "ru-orig", "en-orig"],
+                "subtitleslangs": task.info.get("subtitle_languages") or ["ru", "en"],
                 "subtitlesformat": "srt/best",
                 "outtmpl": str(work_dir / "subtitle.%(ext)s"),
                 "progress_hooks": [self._progress_hook(task)],
             }
         )
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with youtube_client(options) as ydl:
             ydl.download([task.url])
-        return sorted(path for path in work_dir.glob("*.srt") if path.is_file())
+        extensions = {".srt", ".vtt", ".ttml", ".ass", ".srv3", ".json3"}
+        return sorted(
+            path for path in work_dir.iterdir() if path.is_file() and path.suffix in extensions
+        )
 
     async def download_subtitles(self, task: DownloadTask, work_dir: Path) -> list[Path]:
         task.work_dir = str(work_dir)
@@ -430,62 +533,73 @@ class MediaDownloader:
     def _download_thumbnail_sync(self, task: DownloadTask, work_dir: Path) -> Path:
         options = self._common_options()
         options["skip_download"] = True
-        downloaded: list[tuple[Path, int]] = []
-
-        with yt_dlp.YoutubeDL(options) as ydl:
+        with youtube_client(options) as ydl:
             info = ydl.extract_info(task.url, download=False)
-            thumbnails = list((info or {}).get("thumbnails") or [])
-
-            def metadata_rank(
-                index_and_thumbnail: tuple[int, dict[str, Any]],
-            ) -> tuple[float, int, int]:
-                index, thumbnail = index_and_thumbnail
-                try:
-                    preference = float(thumbnail.get("preference") or 0)
-                except (TypeError, ValueError):
-                    preference = 0
-                width = int(thumbnail.get("width") or 0)
-                height = int(thumbnail.get("height") or 0)
-                return (preference, width * height, index)
-
-            # The highest-ranked URL is not always the highest-quality image in practice.
-            # Compare a small group of source files using their real pixel dimensions.
-            candidates = sorted(enumerate(thumbnails), key=metadata_rank, reverse=True)[:8]
-            for output_index, (_, thumbnail) in enumerate(candidates):
-                if task.cancel_event.is_set():
-                    raise DownloadCancelled("Загрузка отменена пользователем")
-                url = thumbnail.get("url")
-                if not url:
-                    continue
-                extension = determine_ext(url, "jpg").lower()
-                if extension not in {"avif", "jpeg", "jpg", "png", "webp"}:
-                    extension = "jpg"
-                path = work_dir / f"thumbnail-{output_index}.{extension}"
-                headers = thumbnail.get("http_headers") or (info or {}).get("http_headers") or {}
-                try:
-                    response = ydl.urlopen(Request(url, headers=headers))
-                    try:
-                        with path.open("wb") as output:
-                            shutil.copyfileobj(response, output)
-                    finally:
-                        response.close()
-                except Exception as exc:
-                    path.unlink(missing_ok=True)
-                    logger.debug("Thumbnail candidate failed: %s", exc)
-                    continue
-                metadata_area = int(thumbnail.get("width") or 0) * int(thumbnail.get("height") or 0)
-                downloaded.append((path, metadata_area))
+            if not isinstance(info, dict):
+                raise FileNotFoundError("Источник не вернул данные превью")
+            candidates = self._ranked_thumbnails(info)
+            downloaded = self._download_thumbnail_candidates(task, work_dir, ydl, info, candidates)
 
         if not downloaded:
             raise FileNotFoundError("Превью недоступно")
+        return max(downloaded, key=self._thumbnail_quality)[0]
 
-        def quality_rank(candidate: tuple[Path, int]) -> tuple[int, int, int]:
-            path, metadata_area = candidate
-            width, height = self._image_dimensions(path)
-            actual_area = width * height
-            return (actual_area or metadata_area, path.stat().st_size, metadata_area)
+    @classmethod
+    def _ranked_thumbnails(cls, info: dict[str, Any]) -> list[dict[str, Any]]:
+        thumbnails = [item for item in info.get("thumbnails") or [] if isinstance(item, dict)]
 
-        return max(downloaded, key=quality_rank)[0]
+        def rank(index_and_thumbnail: tuple[int, dict[str, Any]]) -> tuple[float, int, int]:
+            index, thumbnail = index_and_thumbnail
+            preference = cls._number(thumbnail.get("preference"))
+            width = round(cls._number(thumbnail.get("width")))
+            height = round(cls._number(thumbnail.get("height")))
+            return (preference, width * height, index)
+
+        return [item for _, item in sorted(enumerate(thumbnails), key=rank, reverse=True)[:8]]
+
+    def _download_thumbnail_candidates(
+        self,
+        task: DownloadTask,
+        work_dir: Path,
+        ydl: yt_dlp.YoutubeDL,
+        info: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> list[tuple[Path, int]]:
+        downloaded: list[tuple[Path, int]] = []
+        for output_index, thumbnail in enumerate(candidates):
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем")
+            url = thumbnail.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            extension = determine_ext(url, "jpg").lower()
+            if extension not in {"avif", "jpeg", "jpg", "png", "webp"}:
+                extension = "jpg"
+            path = work_dir / f"thumbnail-{output_index}.{extension}"
+            headers = thumbnail.get("http_headers") or info.get("http_headers") or {}
+            if not isinstance(headers, dict):
+                headers = {}
+            try:
+                response = ydl.urlopen(Request(url, headers=headers))
+                try:
+                    with path.open("wb") as output:
+                        shutil.copyfileobj(response, output)
+                finally:
+                    response.close()
+            except Exception as exc:
+                path.unlink(missing_ok=True)
+                logger.debug("Thumbnail candidate failed: %s", exc)
+                continue
+            width = round(self._number(thumbnail.get("width")))
+            height = round(self._number(thumbnail.get("height")))
+            downloaded.append((path, width * height))
+        return downloaded
+
+    def _thumbnail_quality(self, candidate: tuple[Path, int]) -> tuple[int, int, int]:
+        path, metadata_area = candidate
+        width, height = self._image_dimensions(path)
+        actual_area = width * height
+        return (actual_area or metadata_area, path.stat().st_size, metadata_area)
 
     def _download_tiktok_thumbnail_sync(self, task: DownloadTask, work_dir: Path) -> Path:
         video_id = tiktok_video_id(task.url, known_id=task.info.get("id"))
@@ -500,7 +614,7 @@ class MediaDownloader:
         if extension not in {"avif", "jpeg", "jpg", "png", "webp"}:
             extension = "jpg"
         path = work_dir / f"thumbnail.{extension}"
-        with yt_dlp.YoutubeDL(self._common_options()) as ydl:
+        with youtube_client(self._common_options()) as ydl:
             response = ydl.urlopen(Request(str(url)))
             try:
                 with path.open("wb") as output:
@@ -513,14 +627,30 @@ class MediaDownloader:
         task.work_dir = str(work_dir)
         task.phase = "Скачивание превью"
         if task.info.get("_tiktok_fallback"):
-            return await asyncio.to_thread(self._download_tiktok_thumbnail_sync, task, work_dir)
+            result = await asyncio.to_thread(self._download_tiktok_thumbnail_sync, task, work_dir)
+            return self._validate_result_size(result)
         try:
-            return await asyncio.to_thread(self._download_thumbnail_sync, task, work_dir)
+            result = await asyncio.to_thread(self._download_thumbnail_sync, task, work_dir)
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем")
+            return self._validate_result_size(result)
+        except (DownloadCancelled, FileTooLarge, TimeoutError):
+            raise
         except Exception as exc:
             if is_tiktok_url(task.url) and tiktok_video_id(task.url, str(exc), task.info.get("id")):
                 task.info["id"] = tiktok_video_id(task.url, str(exc), task.info.get("id"))
-                return await asyncio.to_thread(self._download_tiktok_thumbnail_sync, task, work_dir)
+                result = await asyncio.to_thread(
+                    self._download_tiktok_thumbnail_sync, task, work_dir
+                )
+                if task.cancel_event.is_set():
+                    raise DownloadCancelled("Загрузка отменена пользователем") from exc
+                return self._validate_result_size(result)
             raise
+
+    def _validate_result_size(self, path: Path) -> Path:
+        if path.stat().st_size > self.settings.effective_upload_limit:
+            raise FileTooLarge("Файл превышает лимит Telegram")
+        return path
 
     @staticmethod
     def _can_fallback(exc: BaseException) -> bool:
@@ -535,6 +665,9 @@ class MediaDownloader:
             "video unavailable",
             "403",
             "404",
+            "no space",
+            "disk quota",
+            "ffmpeg is not installed",
         )
         return not any(marker in value for marker in permanent)
 
@@ -556,7 +689,6 @@ class MediaDownloader:
         )
         if not allow_non_h264:
             return compatible
-        # Exact user choices may use AV1/VP9; the result is remuxed to MP4.
         return f"{compatible}/bv*[height{comparator}{height}]+ba/b[height{comparator}{height}]"
 
     def variants(self, task: DownloadTask, output: Path) -> list[DownloadVariant]:
@@ -576,35 +708,9 @@ class MediaDownloader:
                     ),
                 )
             ]
-
-        if task.action == DownloadAction.RESOLUTION and task.requested_height:
-            heights = [task.requested_height]
-            heights.extend(
-                height
-                for height in (2160, 1440, 1080, 720, 480, 360)
-                if height < task.requested_height
-            )
-        elif task.action in {DownloadAction.LOW, DownloadAction.GIF}:
-            heights = [480, 360]
-        elif task.action == DownloadAction.MEDIUM:
-            heights = [720, 480, 360]
-        else:
-            available = sorted(
-                {
-                    int(item["height"])
-                    for item in task.info.get("formats") or []
-                    if item.get("height") and item.get("vcodec", "none") != "none"
-                },
-                reverse=True,
-            )
-            heights = available or [2160, 1440, 1080, 720, 480, 360]
-
-        seen: set[int] = set()
+        heights = self._candidate_heights(task)
         variants: list[DownloadVariant] = []
         for index, height in enumerate(heights):
-            if height in seen or height <= 0:
-                continue
-            seen.add(height)
             variants.append(
                 DownloadVariant(
                     label=f"{height}p",
@@ -619,7 +725,7 @@ class MediaDownloader:
                     output_template=template,
                 )
             )
-        if _media_tool("ffmpeg"):
+        if _media_tool("ffmpeg") and task.action == DownloadAction.BEST:
             variants.append(
                 DownloadVariant(
                     label="совместимый формат",
@@ -628,3 +734,31 @@ class MediaDownloader:
                 )
             )
         return variants
+
+    @staticmethod
+    def _candidate_heights(task: DownloadTask) -> list[int]:
+        if task.action == DownloadAction.RESOLUTION and task.requested_height:
+            heights = [task.requested_height]
+            heights.extend(
+                height
+                for height in (2160, 1440, 1080, 720, 480, 360)
+                if height < task.requested_height
+            )
+        elif task.action in {DownloadAction.LOW, DownloadAction.GIF}:
+            heights = [480, 360]
+        elif task.action == DownloadAction.MEDIUM:
+            heights = [720, 480, 360]
+        else:
+            available: list[int] = []
+            for item in task.info.get("formats") or []:
+                if not isinstance(item, dict) or item.get("vcodec", "none") == "none":
+                    continue
+                try:
+                    height = int(item.get("height"))
+                except (TypeError, ValueError):
+                    continue
+                if height > 0:
+                    available.append(height)
+            available = sorted(set(available), reverse=True)
+            heights = available or [2160, 1440, 1080, 720, 480, 360]
+        return list(dict.fromkeys(height for height in heights if height > 0))

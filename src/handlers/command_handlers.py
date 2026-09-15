@@ -1,262 +1,194 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from dataclasses import dataclass
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from config import Settings
+
 from ..core.download_manager import DownloadManager
 from ..core.models import TaskStatus
+from ..core.selection_store import SelectionStore
 from ..core.telegram_gateway import TelegramGateway
 from ..core.user_stats import UserStatsManager
-from ..utils.presentation import panel, progress_bar, rich_panel
+from ..utils.presentation import clip, panel, progress_bar
 
 
-def _main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📖 Возможности", callback_data="ui:help", style="primary"
+@dataclass(frozen=True, slots=True)
+class Screen:
+    text: str
+    keyboard: InlineKeyboardMarkup
+
+
+def menu_keyboard(user_id: int, *, cancellable: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="Загрузки", callback_data=f"ui:status:{user_id}"),
+            InlineKeyboardButton(text="Статистика", callback_data=f"ui:stats:{user_id}"),
+        ],
+        [InlineKeyboardButton(text="Как пользоваться", callback_data=f"ui:help:{user_id}")],
+    ]
+    if cancellable:
+        rows.insert(
+            0,
+            [InlineKeyboardButton(text="Отменить загрузки", callback_data=f"ui:cancel:{user_id}")],
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+class CommandHandlers:
+    def __init__(
+        self,
+        manager: DownloadManager,
+        stats: UserStatsManager,
+        telegram: TelegramGateway,
+        settings: Settings,
+        selections: SelectionStore,
+    ):
+        self.manager = manager
+        self.stats = stats
+        self.telegram = telegram
+        self.settings = settings
+        self.selections = selections
+
+    def router(self) -> Router:
+        router = Router(name="commands")
+        router.message.register(self.start, CommandStart())
+        router.message.register(self.help, Command("help"))
+        router.message.register(self.status, Command("status"))
+        router.message.register(self.stats_command, Command("stats"))
+        router.message.register(self.cancel, Command("cancel"))
+        router.callback_query.register(self.menu, F.data.startswith("ui:"))
+        router.callback_query.register(self.legacy_cancel, F.data == "cancel_all_downloads")
+        return router
+
+    async def screen(self, action: str, user_id: int, chat_id: int) -> Screen:
+        keyboard = menu_keyboard(user_id)
+        if action == "help":
+            return Screen(
+                panel(
+                    "Как пользоваться",
+                    [
+                        "Пришлите ссылку на видео или публикацию, затем выберите формат.",
+                        "В группе видео скачивается автоматически, с ориентиром на 720p.",
+                        "",
+                        "MP3, GIF до 30 секунд, субтитры и обложка доступны в меню публикации.",
+                        f"Лимит файла: {self.settings.effective_upload_limit / 1048576:g} МБ.",
+                        f"В плейлисте: до {self.settings.max_playlist_items} видео; действует лимит очереди.",
+                        "",
+                        "/status — загрузки в этом чате",
+                        "/cancel — отменить проверку ссылки и загрузки до отправки",
+                    ],
                 ),
-                InlineKeyboardButton(
-                    text="📦 Загрузки", callback_data="ui:status", style="primary"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📊 Моя статистика", callback_data="ui:stats", style="success"
-                )
-            ],
-        ]
-    )
+                keyboard,
+            )
+        if action == "status":
+            return self.status_screen(user_id, chat_id)
+        if action == "stats":
+            value = await asyncio.to_thread(self.stats.get_user_stats, user_id)
+            lines = [
+                f"Скачано: {value.downloads_count}",
+                f"Видео: {value.total_videos} · Аудио: {value.total_audios}",
+                f"Остальные файлы: {value.total_other_downloads}",
+                f"Объём: {value.total_size_mb:.1f} МБ",
+                f"Неудачных загрузок: {value.failed_downloads}",
+            ]
+            return Screen(panel("Статистика", lines), keyboard)
+        if action == "cancel":
+            count = self.manager.cancel_for_user(user_id, chat_id=chat_id)
+            choices = self.selections.cancel_for_user(user_id, chat_id=chat_id)
+            lines = [f"Отменено загрузок: {count}."] if count else ["Нет загрузок для отмены."]
+            if choices:
+                lines.append("Проверка ссылок и выбор формата отменены.")
+            if any(
+                t.status == TaskStatus.UPLOADING
+                for t in self.manager.snapshot(user_id=user_id, chat_id=chat_id)
+            ):
+                lines.append("Файл уже отправляется. Дождитесь завершения.")
+            return Screen(panel("Отмена", lines), keyboard)
+        return Screen(
+            panel("ReSave", ["Пришлите ссылку — скачаю видео, музыку или фото."]), keyboard
+        )
+
+    def status_screen(self, user_id: int, chat_id: int) -> Screen:
+        tasks = self.manager.snapshot(user_id=user_id, chat_id=chat_id)
+        lines = []
+        for task in tasks[:10]:
+            phase = task.phase
+            if task.status == TaskStatus.DOWNLOADING and task.progress > 0:
+                phase += f" · {progress_bar(task.progress)}"
+            lines.extend([clip(task.title, 160), phase, ""])
+        if len(tasks) > 10:
+            lines.append(f"Ещё в очереди: {len(tasks) - 10}")
+        if not tasks:
+            lines = ["Сейчас загрузок нет. Пришлите ссылку."]
+        return Screen(panel("Загрузки", lines), menu_keyboard(user_id, cancellable=bool(tasks)))
+
+    async def show(self, message: Message, action: str) -> None:
+        if message.from_user is None:
+            return
+        screen = await self.screen(action, message.from_user.id, message.chat.id)
+        await self.telegram.send_message(
+            message.chat.id,
+            screen.text,
+            reply_markup=screen.keyboard,
+            reply_parameters=self.telegram._reply(message.message_id),
+        )
+
+    async def start(self, message: Message, state: FSMContext) -> None:
+        await state.clear()
+        if message.from_user and message.chat.type == "private":
+            await asyncio.to_thread(self.stats.ensure_user, message.from_user.id)
+        await self.show(message, "start")
+
+    async def help(self, message: Message) -> None:
+        await self.show(message, "help")
+
+    async def status(self, message: Message) -> None:
+        await self.show(message, "status")
+
+    async def stats_command(self, message: Message) -> None:
+        await self.show(message, "stats")
+
+    async def cancel(self, message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await self.show(message, "cancel")
+
+    async def menu(self, call: CallbackQuery, state: FSMContext) -> None:
+        if not isinstance(call.message, Message):
+            await self.telegram.answer_callback(call, "Сообщение недоступно.")
+            return
+        parts = (call.data or "").split(":")
+        if len(parts) != 3 or parts[2] != str(call.from_user.id):
+            await self.telegram.answer_callback(call, "Откройте своё меню командой /start.")
+            return
+        if parts[1] not in {"help", "status", "stats", "cancel"}:
+            await self.telegram.answer_callback(call, "Кнопка устарела. Откройте /start.")
+            return
+        if parts[1] == "cancel":
+            await state.clear()
+        await self.telegram.answer_callback(call)
+        screen = await self.screen(parts[1], call.from_user.id, call.message.chat.id)
+        await self.telegram.edit_status(
+            call.message.chat.id,
+            call.message.message_id,
+            screen.text,
+            reply_markup=screen.keyboard,
+        )
+
+    async def legacy_cancel(self, call: CallbackQuery) -> None:
+        await self.telegram.answer_callback(call, "Откройте /status, чтобы отменить загрузки.")
 
 
 def build_command_router(
     manager: DownloadManager,
     stats: UserStatsManager,
     telegram: TelegramGateway,
+    settings: Settings,
+    selections: SelectionStore,
 ) -> Router:
-    router = Router(name="commands")
-
-    async def safe_reply(message: Message, text: str, **kwargs):
-        try:
-            return await message.reply(text, parse_mode="HTML", **kwargs)
-        except (TelegramBadRequest, TelegramForbiddenError):
-            return None
-
-    async def safe_rich_reply(
-        message: Message,
-        *,
-        rich_html: str,
-        fallback_html: str,
-        reply_markup: InlineKeyboardMarkup | None = None,
-    ):
-        try:
-            return await telegram.send_rich_message(
-                message.chat.id,
-                rich_html=rich_html,
-                fallback_html=fallback_html,
-                reply_to=message.message_id,
-                reply_markup=reply_markup,
-            )
-        except (TelegramBadRequest, TelegramForbiddenError):
-            return None
-
-    async def start(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        if message.from_user:
-            await asyncio.to_thread(stats.ensure_user, message.from_user.id)
-        await safe_rich_reply(
-            message,
-            rich_html=rich_panel(
-                "ReSave",
-                lead="Отправьте ссылку — бот сам определит источник и предложит подходящие форматы.",
-                sections=(
-                    (
-                        "Что можно скачать",
-                        (
-                            "Видео в доступном качестве",
-                            "MP3, превью и субтитры",
-                            "Фото и публикации из соцсетей",
-                        ),
-                    ),
-                    (
-                        "Как это работает",
-                        (
-                            "Отправьте ссылку",
-                            "Выберите формат цветной кнопкой",
-                            "Получите готовый файл",
-                        ),
-                    ),
-                ),
-            ),
-            fallback_html=panel(
-                "ReSave",
-                [
-                    "Скачиваю видео, аудио, превью, субтитры и фото по ссылке.",
-                    "",
-                    "1. Отправьте ссылку.",
-                    "2. Выберите формат и качество.",
-                    "3. Получите готовый файл.",
-                    "",
-                    "Работаю с YouTube, TikTok, Instagram, X/Twitter, Facebook, Vimeo, Twitch, Reddit и другими источниками yt-dlp.",
-                ],
-                icon="⚡",
-            ),
-            reply_markup=_main_keyboard(),
-        )
-
-    async def help_command(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        await safe_rich_reply(
-            message,
-            rich_html=rich_panel(
-                "Как скачать медиа",
-                lead="Просто пришлите ссылку в этот чат. В группе бот автоматически выберет видео до 720p.",
-                sections=(
-                    (
-                        "Доступные действия",
-                        (
-                            "Выбор разрешения или максимального качества",
-                            "Извлечение MP3",
-                            "Скачивание превью, субтитров и GIF",
-                        ),
-                    ),
-                    (
-                        "Команды",
-                        (
-                            "/status — текущие загрузки",
-                            "/cancel — отменить загрузки",
-                            "/stats — личная статистика",
-                        ),
-                    ),
-                ),
-            ),
-            fallback_html=panel(
-                "Как пользоваться",
-                [
-                    "В личном чате отправьте ссылку и выберите формат кнопкой.",
-                    "В группе бот автоматически скачивает видео до 720p в ответ на ссылку.",
-                    "Плейлисты добавляются в очередь, но ограничены безопасным числом элементов.",
-                    "",
-                    "/status — текущие загрузки",
-                    "/cancel — отменить свои загрузки",
-                    "/stats — личная статистика",
-                ],
-                icon="📖",
-            ),
-            reply_markup=_main_keyboard(),
-        )
-
-    async def status(message: Message, state: FSMContext, user_id: int | None = None) -> None:
-        await state.clear()
-        target_user_id = user_id or (message.from_user.id if message.from_user else None)
-        if target_user_id is None:
-            return
-        tasks = manager.snapshot(user_id=target_user_id, chat_id=message.chat.id)
-        if not tasks:
-            await safe_reply(
-                message,
-                panel("Активных загрузок нет", ["Отправьте новую ссылку."], icon="✅"),
-            )
-            return
-
-        lines: list[str] = []
-        for task in tasks:
-            lines.append(task.title)
-            if task.status == TaskStatus.PENDING:
-                lines.append("⏳ В очереди")
-            else:
-                lines.append(f"{task.phase}: {progress_bar(task.progress)}")
-            lines.append("")
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="❌ Отменить все",
-                        callback_data="cancel_all_downloads",
-                        style="danger",
-                    )
-                ]
-            ]
-        )
-        await safe_reply(message, panel("Ваши загрузки", lines, icon="📦"), reply_markup=keyboard)
-
-    async def cancel(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        if not message.from_user:
-            return
-        count = manager.cancel_for_user(message.from_user.id, chat_id=message.chat.id)
-        title = "Загрузки отменены" if count else "Отменять нечего"
-        await safe_reply(
-            message, panel(title, [f"Отменено: {count}"], icon="✅" if count else "⏳")
-        )
-
-    async def stats_command(
-        message: Message, state: FSMContext, user_id: int | None = None
-    ) -> None:
-        await state.clear()
-        target_user_id = user_id or (message.from_user.id if message.from_user else None)
-        if target_user_id is None:
-            return
-        value = await asyncio.to_thread(stats.get_user_stats, target_user_id)
-        if value.downloads_count == 0:
-            lines = ["Пока нет завершённых загрузок."]
-        else:
-            attempts = value.downloads_count + value.failed_downloads
-            success = value.downloads_count / attempts * 100 if attempts else 0
-            lines = [
-                f"Всего: {value.downloads_count}",
-                f"Видео: {value.total_videos}",
-                f"Аудио: {value.total_audios}",
-                f"Прочее: {value.total_other_downloads}",
-                f"Ошибок: {value.failed_downloads}",
-                f"Объём: {value.total_size_mb:.1f} MB",
-                f"Успешность: {success:.1f}%",
-            ]
-            if value.first_download_date:
-                lines.append(f"Первая загрузка: {_format_date(value.first_download_date)}")
-            if value.last_download_date:
-                lines.append(f"Последняя загрузка: {_format_date(value.last_download_date)}")
-        await safe_rich_reply(
-            message,
-            rich_html=rich_panel(
-                "Ваша статистика",
-                lead="Личная история успешных и неудачных загрузок.",
-                sections=(("Результаты", tuple(lines)),),
-            ),
-            fallback_html=panel("Ваша статистика", lines, icon="📊"),
-            reply_markup=_main_keyboard(),
-        )
-
-    async def menu_callback(callback: CallbackQuery, state: FSMContext) -> None:
-        await callback.answer()
-        if not callback.message or not isinstance(callback.message, Message):
-            return
-        action = callback.data or ""
-        if action == "ui:help":
-            await help_command(callback.message, state)
-        elif action == "ui:status":
-            await status(callback.message, state, user_id=callback.from_user.id)
-        elif action == "ui:stats":
-            await stats_command(callback.message, state, user_id=callback.from_user.id)
-
-    router.message.register(start, CommandStart())
-    router.message.register(help_command, Command("help"))
-    router.message.register(status, Command("status"))
-    router.message.register(cancel, Command("cancel"))
-    router.message.register(stats_command, Command("stats"))
-    router.callback_query.register(menu_callback, F.data.in_({"ui:help", "ui:status", "ui:stats"}))
-    return router
-
-
-def _format_date(value: str) -> str:
-    try:
-        return datetime.fromisoformat(value).astimezone().strftime("%d.%m.%Y %H:%M")
-    except ValueError:
-        return value
+    return CommandHandlers(manager, stats, telegram, settings, selections).router()

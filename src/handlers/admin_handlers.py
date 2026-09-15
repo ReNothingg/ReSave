@@ -1,313 +1,368 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-from dataclasses import dataclass
+import secrets
+import time
 
-from aiogram import Bot, Router
-from aiogram.exceptions import TelegramRetryAfter
-from aiogram.filters import Command
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Settings
 
-from ..core.user_stats import UserStats, UserStatsManager
-from ..utils.presentation import panel
-
-logger = logging.getLogger(__name__)
-
-
-class BroadcastStates(StatesGroup):
-    waiting_for_message = State()
+from ..core.telegram_gateway import TelegramGateway
+from ..core.user_stats import UserStatsManager
+from ..utils.presentation import clip, panel
 
 
-@dataclass(slots=True)
-class BroadcastPayload:
-    kind: str
-    text: str | None = None
-    caption: str | None = None
-    file_id: str | None = None
-    entities: list | None = None
-    caption_entities: list | None = None
+class AdminStates(StatesGroup):
+    message = State()
+    broadcast_confirmation = State()
+    reset_confirmation = State()
 
 
-def _admin_keyboard() -> InlineKeyboardMarkup:
+def keyboard(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📊 Статистика", callback_data="admin:stats", style="primary"
-                ),
-                InlineKeyboardButton(
-                    text="📣 Рассылка", callback_data="admin:broadcast", style="primary"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="👥 Пользователи", callback_data="admin:users", style="primary"
-                ),
-                InlineKeyboardButton(
-                    text="🧹 Очистить БД", callback_data="admin:clear", style="danger"
-                ),
-            ],
+            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
+            for row in rows
         ]
     )
 
 
-def _back_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:back")]]
-    )
-
-
-def _confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Подтвердить", callback_data="broadcast:confirm", style="success"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отменить", callback_data="broadcast:cancel", style="danger"
-                ),
-            ]
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return keyboard(
+        [
+            [("Статистика", "admin:stats"), ("Пользователи", "admin:users")],
+            [("Рассылка", "admin:broadcast")],
+            [("Сбросить счётчики", "admin:clear")],
         ]
     )
 
 
-def _stats_lines(items: dict[int, UserStats]) -> list[str]:
-    downloads = sum(item.downloads_count for item in items.values())
-    failed = sum(item.failed_downloads for item in items.values())
-    attempts = downloads + failed
-    return [
-        f"Пользователей: {len(items)}",
-        f"Загрузок: {downloads}",
-        f"Видео: {sum(item.total_videos for item in items.values())}",
-        f"Аудио: {sum(item.total_audios for item in items.values())}",
-        f"Прочее: {sum(item.total_other_downloads for item in items.values())}",
-        f"Ошибок: {failed}",
-        f"Успешность: {downloads / attempts * 100 if attempts else 0:.1f}%",
-        f"Объём: {sum(item.total_size_mb for item in items.values()):.1f} MB",
-    ]
+def back_keyboard() -> InlineKeyboardMarkup:
+    return keyboard([[("Назад", "admin:back")]])
 
 
-def _payload(message: Message) -> BroadcastPayload | None:
-    if message.text:
-        return BroadcastPayload("text", text=message.text, entities=list(message.entities or []))
-    for kind in ("photo", "video", "document", "audio"):
-        value = getattr(message, kind, None)
-        if not value:
-            continue
-        file_id = value[-1].file_id if kind == "photo" else value.file_id
-        return BroadcastPayload(
-            kind,
-            file_id=file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
+class AdminHandlers:
+    def __init__(self, settings: Settings, stats: UserStatsManager, telegram: TelegramGateway):
+        self.settings = settings
+        self.stats = stats
+        self.telegram = telegram
+        self.running: tuple[int, str, asyncio.Event] | None = None
+
+    def router(self) -> Router:
+        router = Router(name="admin")
+        router.message.filter(F.from_user.id.in_(self.settings.admin_ids), F.chat.type == "private")
+        router.callback_query.filter(
+            F.from_user.id.in_(self.settings.admin_ids),
+            F.message.chat.type == "private",
         )
-    return None
+        router.message.register(self.open, Command("admin"))
+        router.message.register(self.begin, Command("broadcast"))
+        router.message.register(self.global_stats, Command("stats_global"))
+        router.message.register(
+            self.cancel,
+            Command("cancel"),
+            StateFilter(
+                AdminStates.message,
+                AdminStates.broadcast_confirmation,
+                AdminStates.reset_confirmation,
+            ),
+        )
+        router.message.register(self.receive, AdminStates.message, ~F.text.startswith("/"))
+        router.callback_query.register(self.navigate, F.data.startswith("admin:"))
+        router.callback_query.register(self.broadcast, F.data.startswith("broadcast:"))
+        return router
 
+    async def stats_text(self) -> str:
+        items = await asyncio.to_thread(self.stats.get_all_stats)
+        values = list(items.values())
+        return panel(
+            "Статистика бота",
+            [
+                f"Пользователей: {len(values)}",
+                f"Скачано: {sum(item.downloads_count for item in values)}",
+                f"Объём: {sum(item.total_size_mb for item in values):.1f} МБ",
+                f"Неудачных загрузок: {sum(item.failed_downloads for item in values)}",
+            ],
+        )
 
-async def _send_payload(bot: Bot, user_id: int, payload: BroadcastPayload) -> None:
-    if payload.kind == "text":
-        await bot.send_message(user_id, payload.text or "", entities=payload.entities)
-        return
-    method = getattr(bot, f"send_{payload.kind}")
-    await method(
-        chat_id=user_id,
-        **{payload.kind: payload.file_id},
-        caption=payload.caption,
-        caption_entities=payload.caption_entities,
-    )
+    async def open(self, message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await self.telegram.send_message(
+            message.chat.id, panel("Управление ботом"), reply_markup=admin_keyboard()
+        )
 
+    async def global_stats(self, message: Message) -> None:
+        await self.telegram.send_message(
+            message.chat.id, await self.stats_text(), reply_markup=admin_keyboard()
+        )
 
-def build_admin_router(settings: Settings, stats: UserStatsManager) -> Router:
-    router = Router(name="admin")
-    pending: dict[int, BroadcastPayload] = {}
-
-    def allowed(user_id: int | None) -> bool:
-        return bool(user_id is not None and user_id in settings.admin_ids)
-
-    async def all_stats() -> dict[int, UserStats]:
-        return await asyncio.to_thread(stats.get_all_stats)
-
-    async def panel_text() -> str:
-        return panel("Панель администратора", _stats_lines(await all_stats()), icon="🛠️")
-
-    async def admin(message: Message, state: FSMContext) -> None:
-        if not message.from_user or not allowed(message.from_user.id):
+    async def begin(self, message: Message, state: FSMContext) -> None:
+        if self.running:
+            await self.telegram.send_message(
+                message.chat.id, "Рассылка уже идёт. Дождитесь завершения."
+            )
             return
         await state.clear()
-        await message.reply(await panel_text(), parse_mode="HTML", reply_markup=_admin_keyboard())
-
-    async def stats_command(message: Message) -> None:
-        if not message.from_user or not allowed(message.from_user.id):
-            return
-        await message.reply(
-            panel("Глобальная статистика", _stats_lines(await all_stats()), icon="📊"),
-            parse_mode="HTML",
-        )
-
-    async def begin_broadcast(message: Message, state: FSMContext) -> None:
-        if not message.from_user or not allowed(message.from_user.id):
-            return
-        await state.set_state(BroadcastStates.waiting_for_message)
-        await message.reply(
+        await state.set_state(AdminStates.message)
+        await self.telegram.send_message(
+            message.chat.id,
             panel(
                 "Рассылка",
                 [
-                    "Отправьте текст, фото, видео, документ или аудио.",
-                    "Следующим шагом будет подтверждение.",
+                    "Пришлите одно сообщение: текст, фото, видео, аудио или файл.",
+                    "/cancel — отменить",
                 ],
-                icon="📣",
             ),
-            parse_mode="HTML",
+            reply_markup=back_keyboard(),
         )
 
-    async def receive_broadcast(message: Message, state: FSMContext) -> None:
-        if not message.from_user or not allowed(message.from_user.id):
-            return
-        value = _payload(message)
-        if value is None:
-            await message.reply(panel("Формат не поддерживается", icon="⚠️"), parse_mode="HTML")
-            return
-        pending[message.from_user.id] = value
+    async def cancel(self, message: Message, state: FSMContext) -> None:
         await state.clear()
-        recipients = len(await all_stats())
-        await message.reply(
-            panel("Подтвердите рассылку", [f"Получателей: {recipients}"], icon="📣"),
-            parse_mode="HTML",
-            reply_markup=_confirm_keyboard(),
+        await self.telegram.send_message(
+            message.chat.id, "Действие отменено.", reply_markup=admin_keyboard()
         )
 
-    async def admin_callback(call: CallbackQuery, state: FSMContext) -> None:
-        if not call.from_user or not allowed(call.from_user.id) or not call.message:
+    async def receive(self, message: Message, state: FSMContext) -> None:
+        if message.media_group_id or not any(
+            (
+                message.text,
+                message.photo,
+                message.video,
+                message.audio,
+                message.document,
+                message.animation,
+            )
+        ):
+            await self.telegram.send_message(
+                message.chat.id, "Пришлите одно сообщение без альбома."
+            )
             return
-        action = (call.data or "").partition(":")[2]
-        await call.answer()
-        if action == "back":
-            await state.clear()
-            await call.message.edit_text(
-                await panel_text(), parse_mode="HTML", reply_markup=_admin_keyboard()
-            )
-        elif action == "stats":
-            await call.message.edit_text(
-                panel("Глобальная статистика", _stats_lines(await all_stats()), icon="📊"),
-                parse_mode="HTML",
-                reply_markup=_back_keyboard(),
-            )
-        elif action == "users":
-            items = list((await all_stats()).items())[:20]
-            lines = [
-                f"{user_id}: {value.downloads_count} загрузок · {value.total_size_mb:.1f} MB"
-                for user_id, value in items
-            ] or ["Пользователей пока нет."]
-            await call.message.edit_text(
-                panel("Пользователи", lines, icon="👥"),
-                parse_mode="HTML",
-                reply_markup=_back_keyboard(),
-            )
-        elif action == "broadcast":
-            await state.set_state(BroadcastStates.waiting_for_message)
-            await call.message.edit_text(
-                panel("Рассылка", ["Отправьте сообщение для рассылки."], icon="📣"),
-                parse_mode="HTML",
-                reply_markup=_back_keyboard(),
-            )
-        elif action == "clear":
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
+        token = secrets.token_urlsafe(6)
+        items = await asyncio.to_thread(self.stats.get_all_stats)
+        await state.set_data(
+            {
+                "token": token,
+                "source": message.message_id,
+                "chat": message.chat.id,
+                "expires": time.monotonic() + 600,
+            }
+        )
+        await state.set_state(AdminStates.broadcast_confirmation)
+        await self.telegram.send_message(
+            message.chat.id,
+            panel(
+                "Отправить рассылку?",
+                [
+                    clip(message.text or message.caption or "Сообщение с файлом", 240),
+                    "",
+                    f"Получателей сейчас: {len(items)}",
+                ],
+            ),
+            reply_markup=keyboard(
+                [
                     [
-                        InlineKeyboardButton(
-                            text="✅ Очистить",
-                            callback_data="admin:clear-confirm",
-                            style="danger",
-                        ),
-                        InlineKeyboardButton(
-                            text="❌ Отмена", callback_data="admin:back", style="primary"
-                        ),
+                        ("Отправить", f"broadcast:confirm:{token}"),
+                        ("Отмена", f"broadcast:cancel:{token}"),
                     ]
                 ]
-            )
-            await call.message.edit_text(
-                panel("Очистить статистику?", ["Действие нельзя отменить."], icon="⚠️"),
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        elif action == "clear-confirm":
-            await asyncio.to_thread(stats.clear_all_stats)
-            await call.message.edit_text(
-                panel("Статистика очищена", icon="✅"),
-                parse_mode="HTML",
-                reply_markup=_back_keyboard(),
-            )
-
-    async def broadcast_callback(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-        if not call.from_user or not allowed(call.from_user.id) or not call.message:
-            return
-        action = (call.data or "").partition(":")[2]
-        if action == "cancel":
-            pending.pop(call.from_user.id, None)
-            await state.clear()
-            await call.answer("Отменено")
-            await call.message.edit_text(
-                panel("Рассылка отменена", icon="✕"),
-                parse_mode="HTML",
-                reply_markup=_back_keyboard(),
-            )
-            return
-
-        payload = pending.get(call.from_user.id)
-        if payload is None:
-            await call.answer("Данные рассылки устарели", show_alert=True)
-            return
-        await call.answer()
-        user_ids = list((await all_stats()).keys())
-        sent = failed = 0
-        for index, user_id in enumerate(user_ids, start=1):
-            try:
-                await _send_payload(bot, user_id, payload)
-                sent += 1
-            except TelegramRetryAfter as exc:
-                await asyncio.sleep(float(exc.retry_after) + 0.25)
-                try:
-                    await _send_payload(bot, user_id, payload)
-                    sent += 1
-                except Exception:
-                    failed += 1
-            except Exception as exc:
-                failed += 1
-                logger.info("Broadcast to %s failed: %s", user_id, exc)
-            await asyncio.sleep(0.05)
-            if index % 20 == 0:
-                try:
-                    await call.message.edit_text(
-                        panel(
-                            "Рассылка",
-                            [f"Отправлено: {sent}/{len(user_ids)}", f"Ошибок: {failed}"],
-                            icon="📣",
-                        ),
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-        pending.pop(call.from_user.id, None)
-        await call.message.edit_text(
-            panel("Рассылка завершена", [f"Отправлено: {sent}", f"Ошибок: {failed}"], icon="✅"),
-            parse_mode="HTML",
-            reply_markup=_back_keyboard(),
+            ),
         )
 
-    router.message.register(admin, Command("admin"))
-    router.message.register(begin_broadcast, Command("broadcast"))
-    router.message.register(stats_command, Command("stats_global"))
-    router.message.register(receive_broadcast, BroadcastStates.waiting_for_message)
-    router.callback_query.register(
-        admin_callback, lambda call: bool(call.data and call.data.startswith("admin:"))
-    )
-    router.callback_query.register(
-        broadcast_callback, lambda call: bool(call.data and call.data.startswith("broadcast:"))
-    )
-    return router
+    async def navigate(self, call: CallbackQuery, state: FSMContext) -> None:
+        if not isinstance(call.message, Message):
+            await self.telegram.answer_callback(call, "Сообщение недоступно.")
+            return
+        action = (call.data or "").split(":")[1]
+        await self.telegram.answer_callback(call)
+        if action == "broadcast":
+            await self.begin(call.message, state)
+            return
+        if action == "clear":
+            await self.confirm_reset(call, state)
+            return
+        if action == "clear-confirm":
+            await self.reset(call, state)
+            return
+        await state.clear()
+        markup = back_keyboard()
+        if action == "stats":
+            text = await self.stats_text()
+        elif action == "users":
+            items = await asyncio.to_thread(self.stats.get_all_stats)
+            text = panel(
+                "Пользователи",
+                [
+                    f"{user_id} · {value.downloads_count} загрузок"
+                    for user_id, value in list(items.items())[:20]
+                ]
+                + ([f"Показаны первые 20 из {len(items)}."] if len(items) > 20 else []),
+            )
+        else:
+            text, markup = panel("Управление ботом"), admin_keyboard()
+        await self.telegram.edit_status(
+            call.message.chat.id, call.message.message_id, text, reply_markup=markup
+        )
+
+    async def confirm_reset(self, call: CallbackQuery, state: FSMContext) -> None:
+        token = secrets.token_urlsafe(6)
+        await state.set_data({"reset": token, "expires": time.monotonic() + 600})
+        await state.set_state(AdminStates.reset_confirmation)
+        await self.telegram.edit_status(
+            call.message.chat.id,
+            call.message.message_id,
+            panel(
+                "Сбросить статистику?",
+                ["Обнулю счётчики загрузок и ошибок. Список пользователей сохранится."],
+            ),
+            reply_markup=keyboard(
+                [
+                    [
+                        ("Сбросить", f"admin:clear-confirm:{token}"),
+                        ("Отмена", "admin:back"),
+                    ]
+                ]
+            ),
+        )
+
+    async def reset(self, call: CallbackQuery, state: FSMContext) -> None:
+        data = await state.get_data()
+        parts = (call.data or "").split(":")
+        valid = (
+            await state.get_state() == AdminStates.reset_confirmation.state
+            and len(parts) == 3
+            and parts[2] == data.get("reset")
+            and data.get("expires", 0) > time.monotonic()
+        )
+        if not valid:
+            await self.telegram.edit_status(
+                call.message.chat.id,
+                call.message.message_id,
+                "Подтверждение устарело.",
+                reply_markup=admin_keyboard(),
+            )
+            return
+        await state.clear()
+        await asyncio.to_thread(self.stats.clear_all_stats)
+        await self.telegram.edit_status(
+            call.message.chat.id,
+            call.message.message_id,
+            "Статистика сброшена.",
+            reply_markup=admin_keyboard(),
+        )
+
+    async def broadcast(self, call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+        if not isinstance(call.message, Message):
+            return
+        parts = (call.data or "").split(":")
+        if len(parts) != 3:
+            await self.telegram.answer_callback(
+                call, "Подтверждение устарело. Откройте /broadcast."
+            )
+            return
+        _, action, token = parts
+        if action == "stop":
+            if self.running and self.running[:2] == (call.from_user.id, token):
+                self.running[2].set()
+                await self.telegram.answer_callback(call, "Остановлю после текущего сообщения.")
+            else:
+                await self.telegram.answer_callback(call, "Рассылка уже завершена.")
+            return
+        data = await state.get_data()
+        current = await state.get_state()
+        if (
+            current != AdminStates.broadcast_confirmation.state
+            or token != data.get("token")
+            or data.get("expires", 0) <= time.monotonic()
+        ):
+            await self.telegram.answer_callback(
+                call, "Подтверждение устарело. Откройте /broadcast."
+            )
+            return
+        if action == "cancel":
+            await state.clear()
+            await self.telegram.answer_callback(call, "Отменено")
+            await self.telegram.edit_status(
+                call.message.chat.id,
+                call.message.message_id,
+                "Рассылка отменена.",
+                reply_markup=admin_keyboard(),
+            )
+            return
+        if action != "confirm" or self.running is not None:
+            await self.telegram.answer_callback(call, "Рассылка уже идёт.")
+            return
+        stop = asyncio.Event()
+        self.running = (call.from_user.id, token, stop)
+        try:
+            await state.clear()
+            await self.telegram.answer_callback(call)
+            await self.deliver(call, bot, data, token, stop)
+        finally:
+            self.running = None
+
+    async def deliver(
+        self, call: CallbackQuery, bot: Bot, data: dict, token: str, stop: asyncio.Event
+    ) -> None:
+        recipients = await asyncio.to_thread(self.stats.get_all_stats)
+        sent = failed = 0
+        for user_id in recipients:
+            if stop.is_set():
+                break
+            if (sent + failed) % 20 == 0:
+                await self.telegram.edit_status(
+                    call.message.chat.id,
+                    call.message.message_id,
+                    panel(
+                        "Рассылка",
+                        [f"Отправлено: {sent} из {len(recipients)}", f"Не доставлено: {failed}"],
+                    ),
+                    reply_markup=keyboard([[("Остановить", f"broadcast:stop:{token}")]]),
+                )
+            delivered = await self.copy(bot, user_id, data, stop)
+            if delivered is None:
+                break
+            sent += int(delivered)
+            failed += int(not delivered)
+            await asyncio.sleep(0.05)
+        title = "Рассылка остановлена" if stop.is_set() else "Рассылка завершена"
+        await self.telegram.edit_status(
+            call.message.chat.id,
+            call.message.message_id,
+            panel(title, [f"Отправлено: {sent}", f"Не доставлено: {failed}"]),
+            reply_markup=admin_keyboard(),
+        )
+
+    @staticmethod
+    async def copy(bot: Bot, user_id: int, data: dict, stop: asyncio.Event) -> bool | None:
+        for attempt in range(3):
+            try:
+                await bot.copy_message(
+                    user_id,
+                    from_chat_id=data["chat"],
+                    message_id=data["source"],
+                    request_timeout=30,
+                )
+                return True
+            except TelegramRetryAfter as exc:
+                if attempt == 2:
+                    return False
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=float(exc.retry_after) + 0.25)
+                    return None
+                except TimeoutError:
+                    continue
+            except (TelegramAPIError, TimeoutError):
+                return False
+        return False
+
+
+def build_admin_router(
+    settings: Settings, stats: UserStatsManager, telegram: TelegramGateway
+) -> Router:
+    return AdminHandlers(settings, stats, telegram).router()

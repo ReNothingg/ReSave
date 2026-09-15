@@ -4,11 +4,12 @@ import json
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 from threading import Event
 from typing import Any
 from urllib.parse import urlsplit
+
+from .processes import run_command
 
 VIDEO_EXTENSIONS = {".m4v", ".mkv", ".mov", ".mp4", ".webm"}
 _VIDEO_ID_RE = re.compile(r"/(?:video|photo)/(\d{10,})")
@@ -47,27 +48,15 @@ def _gallery_error(result: subprocess.CompletedProcess[str]) -> str:
     return details[-2000:] if details else "gallery-dl не вернул данные TikTok"
 
 
-def _stop_process(process: subprocess.Popen[str]) -> None:
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
-
-
 def fetch_tiktok_video_info(url: str, *, error: str = "") -> dict[str, Any]:
     video_id = tiktok_video_id(url, error)
     if not video_id:
         raise TikTokFallbackError("Не удалось определить ID видео TikTok")
 
     canonical_url = canonical_tiktok_url(video_id)
-    result = subprocess.run(
+    result = run_command(
         _gallery_command("--no-download", "--dump-json", canonical_url),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
+        deadline_seconds=60,
     )
     if result.returncode != 0:
         raise TikTokFallbackError(_gallery_error(result))
@@ -142,7 +131,7 @@ def download_tiktok_video(
         raise TikTokFallbackError("Не удалось определить ID видео TikTok")
 
     destination.mkdir(parents=True, exist_ok=True)
-    process = subprocess.Popen(
+    result = run_command(
         _gallery_command(
             "--quiet",
             "--no-mtime",
@@ -154,26 +143,11 @@ def download_tiktok_video(
             "extractor.tiktok.archive=null",
             canonical_tiktok_url(video_id),
         ),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        cancel_event=cancel_event,
+        deadline_seconds=timeout,
     )
-    deadline = time.monotonic() + timeout
-    while True:
-        if cancel_event and cancel_event.is_set():
-            _stop_process(process)
-            raise TikTokFallbackError("Загрузка отменена пользователем")
-        if time.monotonic() >= deadline:
-            _stop_process(process)
-            raise TikTokFallbackError("TikTok download timeout")
-        try:
-            stdout, stderr = process.communicate(timeout=0.25)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-    if process.returncode != 0:
-        details = (stderr or stdout).strip()
-        raise TikTokFallbackError(details[-2000:] or "gallery-dl не смог скачать видео TikTok")
+    if result.returncode != 0:
+        raise TikTokFallbackError(_gallery_error(result))
 
     files = sorted(
         (

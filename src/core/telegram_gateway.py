@@ -8,16 +8,15 @@ from typing import Any, TypeVar
 
 from aiogram import Bot
 from aiogram.exceptions import (
+    TelegramAPIError,
     TelegramBadRequest,
     TelegramNetworkError,
-    TelegramNotFound,
     TelegramRetryAfter,
 )
 from aiogram.types import (
+    CallbackQuery,
     FSInputFile,
-    InlineKeyboardMarkup,
     InputMediaPhoto,
-    InputRichMessage,
     ReplyParameters,
 )
 
@@ -40,7 +39,6 @@ class TelegramGateway:
         self.local_api = local_api
         self.use_file_uri = use_file_uri
         self.cloud_upload_limit = cloud_upload_limit
-        self._rich_messages_available: bool | None = None
 
     async def _retry(
         self,
@@ -83,18 +81,17 @@ class TelegramGateway:
 
     async def edit_status(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
         try:
-            await self._retry(
-                lambda: self.bot.edit_message_text(
+            async with asyncio.timeout(8):
+                await self.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=text,
                     parse_mode="HTML",
+                    request_timeout=7,
                     **kwargs,
-                ),
-                retry_network=True,
-            )
+                )
             return True
-        except TelegramBadRequest as exc:
+        except (TelegramAPIError, TimeoutError) as exc:
             if "message is not modified" not in str(exc).lower():
                 logger.debug("Cannot edit status %s/%s: %s", chat_id, message_id, exc)
             return False
@@ -110,42 +107,11 @@ class TelegramGateway:
             lambda: self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", **kwargs)
         )
 
-    async def send_rich_message(
-        self,
-        chat_id: int,
-        *,
-        rich_html: str,
-        fallback_html: str,
-        reply_to: int | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
-    ):
-        """Use Bot API 10.2+ Rich Messages, falling back on older local servers."""
-        if self._rich_messages_available is not False:
-            try:
-                result = await self._retry(
-                    lambda: self.bot.send_rich_message(
-                        chat_id=chat_id,
-                        rich_message=InputRichMessage(html=rich_html),
-                        reply_parameters=self._reply(reply_to),
-                        reply_markup=reply_markup,
-                        request_timeout=180,
-                    )
-                )
-                self._rich_messages_available = True
-                return result
-            except (TelegramBadRequest, TelegramNotFound) as exc:
-                value = str(exc).lower()
-                if not any(marker in value for marker in ("not found", "rich", "unsupported")):
-                    raise
-                self._rich_messages_available = False
-                logger.info("Rich Messages are unavailable on this Bot API; using HTML fallback")
-
-        return await self.send_message(
-            chat_id,
-            fallback_html,
-            reply_parameters=self._reply(reply_to),
-            reply_markup=reply_markup,
-        )
+    async def answer_callback(self, call: CallbackQuery, text: str | None = None) -> None:
+        try:
+            await call.answer(text=text, request_timeout=5)
+        except (TelegramAPIError, TimeoutError) as exc:
+            logger.debug("Cannot answer callback: %s", exc)
 
     def _can_cloud_fallback(self, path: Path) -> bool:
         return bool(
@@ -157,8 +123,6 @@ class TelegramGateway:
 
     @staticmethod
     def _is_transport_error(exc: BaseException) -> bool:
-        # A lost response does not mean Telegram failed to send the file.
-        # Only an explicit rejection is safe to retry via another transport.
         return isinstance(exc, TelegramBadRequest) and "invalid file http url" in str(exc).lower()
 
     async def _upload_with_fallback(

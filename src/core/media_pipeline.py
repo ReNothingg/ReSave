@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import shutil
+import time
 from pathlib import Path
 
 from aiogram.exceptions import TelegramBadRequest
@@ -12,7 +12,9 @@ from config import Settings
 
 from ..utils.file_utils import sanitize_filename
 from ..utils.presentation import media_caption, panel
-from .media_downloader import DownloadCancelled, FileTooLarge, MediaDownloader
+from .errors import DownloadCancelled, FileTooLarge
+from .ffmpeg_tools import convert_gif, positive_seconds, probe_video
+from .media_downloader import MediaDownloader
 from .models import DownloadAction, DownloadTask, TaskStatus
 from .telegram_gateway import TelegramGateway
 from .tiktok_photo_handler import download_tiktok_photos
@@ -49,8 +51,6 @@ class MediaPipeline:
             else:
                 await self._video_or_audio(task, work_dir)
         except asyncio.CancelledError:
-            # A cancelled to_thread call can still be using this directory.
-            # Startup cleanup removes it after the worker has stopped.
             cleanup = False
             raise
         finally:
@@ -77,7 +77,7 @@ class MediaPipeline:
         await self.telegram.edit_status(
             task.chat_id,
             task.status_message_id,
-            panel("Обработка медиа", lines, icon="📦"),
+            panel(task.title, lines),
         )
 
     async def _set_phase(self, task: DownloadTask, status: TaskStatus, phase: str) -> None:
@@ -95,9 +95,7 @@ class MediaPipeline:
 
         if task.action == DownloadAction.GIF:
             await self._set_phase(task, TaskStatus.PROCESSING, "Создание GIF")
-            result = await self._convert_gif(source, work_dir / "animation.gif")
-            if result.stat().st_size > self.settings.effective_upload_limit:
-                raise FileTooLarge("Converted GIF exceeds Telegram file size limit")
+            result = await convert_gif(self.settings, task, source, work_dir / "animation.gif")
             await self._set_phase(task, TaskStatus.UPLOADING, "Отправка GIF")
             size_mb = result.stat().st_size / (1024 * 1024)
             caption = media_caption(task.title, task.url, kind="gif", size_mb=size_mb)
@@ -141,8 +139,8 @@ class MediaPipeline:
             return
 
         caption = media_caption(task.title, task.url, kind="video", size_mb=size_mb)
-        metadata = await self._probe(source)
-        if source.stat().st_size > self.settings.send_as_doc_limit:
+        metadata = await probe_video(source)
+        if source.stat().st_size > self.settings.effective_send_as_doc_limit:
             await self.telegram.send_document(
                 task.chat_id,
                 source,
@@ -176,6 +174,10 @@ class MediaPipeline:
         total = 0
         caption = media_caption(task.title, task.url, kind="subtitles")
         for index, path in enumerate(files):
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем")
+            if path.stat().st_size > self.settings.effective_upload_limit:
+                raise FileTooLarge("Файл субтитров превышает лимит Telegram")
             total += path.stat().st_size
             await self.telegram.send_document(
                 task.chat_id,
@@ -200,14 +202,28 @@ class MediaPipeline:
 
     async def _tiktok_photos(self, task: DownloadTask, work_dir: Path) -> None:
         await self._set_phase(task, TaskStatus.DOWNLOADING, "Скачивание фото TikTok")
-        photos = await asyncio.to_thread(download_tiktok_photos, task.url, work_dir)
+        elapsed = max(0.0, time.time() - task.started_at) if task.started_at else 0.0
+        remaining = self.settings.download_timeout_seconds - elapsed
+        if remaining <= 0:
+            raise TimeoutError("TikTok photo download timeout")
+        photos = await asyncio.to_thread(
+            download_tiktok_photos,
+            task.url,
+            work_dir,
+            cancel_event=task.cancel_event,
+            timeout=max(1, round(min(remaining, 300))),
+        )
         if task.cancel_event.is_set():
             raise DownloadCancelled("Загрузка отменена пользователем")
+        if any(path.stat().st_size > self.settings.effective_upload_limit for path in photos):
+            raise FileTooLarge("Одно из фото превышает лимит Telegram")
         await self._set_phase(task, TaskStatus.UPLOADING, "Отправка фото")
         caption = media_caption(
             f"Фото из TikTok · {len(photos)} шт.", task.url, kind="tiktok_photo"
         )
         for offset in range(0, len(photos), 10):
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем")
             chunk = photos[offset : offset + 10]
             first = offset == 0
             if len(chunk) == 1:
@@ -259,126 +275,10 @@ class MediaPipeline:
                 reply_to=reply_to,
             )
 
-    async def _convert_gif(self, source: Path, target: Path) -> Path:
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            raise RuntimeError("FFmpeg is not installed")
-        process = await asyncio.create_subprocess_exec(
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-threads",
-            "1",
-            "-filter_threads",
-            "1",
-            "-i",
-            str(source),
-            "-t",
-            "30",
-            "-vf",
-            "fps=12,scale=480:-2:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-            "-y",
-            str(target),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-        except asyncio.CancelledError:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            raise
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("FFmpeg GIF conversion timeout") from None
-        if process.returncode:
-            detail = stderr.decode("utf-8", errors="replace")[-500:]
-            raise RuntimeError(f"FFmpeg GIF conversion failed: {detail}")
-        return target
-
-    async def _probe(self, path: Path) -> dict[str, int]:
-        ffprobe = shutil.which("ffprobe")
-        if not ffprobe:
-            return {}
-        process = await asyncio.create_subprocess_exec(
-            ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,duration,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation:format=duration",
-            "-of",
-            "json",
-            str(path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
-            payload = json.loads(stdout or b"{}")
-        except asyncio.CancelledError:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            raise
-        except (TimeoutError, ValueError):
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            return {}
-        stream = (payload.get("streams") or [{}])[0]
-        result: dict[str, int] = {}
-        for key in ("width", "height"):
-            value = stream.get(key)
-            if isinstance(value, int) and value > 0:
-                result[key] = value
-        ratio = self._ratio(stream.get("sample_aspect_ratio"))
-        if ratio and result.get("width"):
-            result["width"] = max(1, round(result["width"] * ratio))
-        rotation = 0
-        try:
-            rotation = int((stream.get("tags") or {}).get("rotate") or 0)
-        except (TypeError, ValueError):
-            pass
-        for side_data in stream.get("side_data_list") or []:
-            try:
-                rotation = int(side_data.get("rotation"))
-                break
-            except (TypeError, ValueError):
-                continue
-        if abs(rotation) % 180 == 90 and result.get("width") and result.get("height"):
-            result["width"], result["height"] = result["height"], result["width"]
-        duration = stream.get("duration") or (payload.get("format") or {}).get("duration")
-        try:
-            parsed_duration = round(float(duration))
-        except (TypeError, ValueError):
-            parsed_duration = 0
-        if parsed_duration > 0:
-            result["duration"] = parsed_duration
-        return result
-
-    @staticmethod
-    def _ratio(value: str | None) -> float | None:
-        if not value or value in {"0:1", "1:0", "0:0"}:
-            return None
-        try:
-            numerator, denominator = value.split(":", 1)
-            ratio = int(numerator) / int(denominator)
-        except (TypeError, ValueError, ZeroDivisionError):
-            return None
-        return ratio if ratio > 0 else None
-
     @staticmethod
     def _duration(info: dict) -> int | None:
-        try:
-            value = round(float(info.get("duration")))
-        except (TypeError, ValueError):
-            return None
-        return value if value > 0 else None
+        value = positive_seconds(info.get("duration"))
+        return value or None
 
     async def _record(self, task: DownloadTask, action: str, size_mb: float) -> None:
         try:
