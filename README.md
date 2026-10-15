@@ -143,13 +143,7 @@ docker compose up -d --build
 Если API отклоняет эмодзи, бот сохраняет Rich Messages и цветные кнопки, заменяя иконки на обычные.
 Для API без Rich Messages предусмотрено HTML-оформление.
 
-Локальный запуск на тестовом боте (нужны Python 3.11+, FFmpeg и Deno):
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt ruff
-```
-
+Локальный запуск на тестовом боте (нужны [uv](https://docs.astral.sh/uv/), FFmpeg и Deno).
 Создайте `.env.local` — его значения важнее `.env`, а в git он не попадает:
 
 ```env
@@ -160,11 +154,10 @@ TEMP_DIR=temp_local
 ```
 
 ```bash
-.venv/bin/python main.py
-.venv/bin/ruff check .
+uv run --no-project --python 3.12 --with-requirements requirements.txt python main.py
 ```
 
-Без локального Bot API лимит файла — 50 МБ.
+uv сам скачает Python и зависимости, ничего настраивать не нужно. Без локального Bot API лимит файла — 50 МБ.
 
 | Путь | Ответственность |
 | :--- | :--- |
