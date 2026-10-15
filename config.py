@@ -83,6 +83,12 @@ class Settings:
     download_stall_timeout_seconds: int
     download_rate_limit_bytes: int
     progress_update_seconds: int
+    packages_dir: Path
+    tools_auto_update: bool
+    tools_update_hours: int
+    max_concurrent_lookups: int
+    lookup_timeout_seconds: int
+    min_free_disk_bytes: int
     rich_messages_enabled: bool = True
     custom_emoji_enabled: bool = True
 
@@ -128,6 +134,12 @@ def build_settings() -> Settings:
         download_stall_timeout_seconds=_integer("DOWNLOAD_STALL_TIMEOUT_SECONDS", 180, minimum=30),
         download_rate_limit_bytes=_integer("DOWNLOAD_RATE_LIMIT_BYTES", 0, minimum=0),
         progress_update_seconds=_integer("PROGRESS_UPDATE_SECONDS", 3, minimum=1),
+        packages_dir=_path("PACKAGES_DIR", ".packages"),
+        tools_auto_update=_boolean("TOOLS_AUTO_UPDATE", True),
+        tools_update_hours=_integer("TOOLS_UPDATE_HOURS", 6, minimum=1),
+        max_concurrent_lookups=_integer("MAX_CONCURRENT_LOOKUPS", 3, minimum=1),
+        lookup_timeout_seconds=_integer("LOOKUP_TIMEOUT_SECONDS", 90, minimum=15),
+        min_free_disk_bytes=_integer("MIN_FREE_DISK_MB", 512, minimum=64) * 1024 * 1024,
         rich_messages_enabled=_boolean("RICH_MESSAGES_ENABLED", True),
         custom_emoji_enabled=_boolean("CUSTOM_EMOJI_ENABLED", True),
     )

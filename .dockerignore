@@ -1,0 +1,8 @@
+*
+!main.py
+!config.py
+!requirements.txt
+!src/
+**/__pycache__
+**/*.pyc
+**/.DS_Store

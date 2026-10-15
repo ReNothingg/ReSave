@@ -18,13 +18,18 @@ def sanitize_filename(name: str, max_length: int = 160) -> str:
     return (safe or "media")[:max_length].rstrip(" .")
 
 
-def cleanup_old_files(temp_dir: str | Path, *, max_age_hours: int = 24) -> None:
+def cleanup_old_files(
+    temp_dir: str | Path,
+    *,
+    max_age_hours: float = 24,
+    keep: set[str] | frozenset[str] = frozenset(),
+) -> None:
     root = Path(temp_dir)
     if not root.exists():
         return
     threshold = time.time() - max_age_hours * 3600
     for entry in root.iterdir():
-        if not re.fullmatch(r"task_[0-9a-f]{32}", entry.name):
+        if not re.fullmatch(r"task_[0-9a-f]{32}", entry.name) or str(entry) in keep:
             continue
         try:
             if entry.stat().st_mtime > threshold:

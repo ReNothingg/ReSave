@@ -16,7 +16,7 @@ class SelectionStore:
 
     def begin_request(self, user_id: int, chat_id: int) -> bool:
         key = (user_id, chat_id)
-        if key in self._requests or len(self._requests) >= 4:
+        if key in self._requests:
             return False
         task = asyncio.current_task()
         if task is None:

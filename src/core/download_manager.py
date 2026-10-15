@@ -34,6 +34,7 @@ class DownloadManager:
         max_queue_size: int,
         max_tasks_per_user: int,
         progress_update_seconds: int,
+        task_timeout_seconds: int = 3600,
     ):
         self.processor = processor
         self.progress_reporter = progress_reporter
@@ -42,6 +43,7 @@ class DownloadManager:
         self.max_concurrent_downloads = max_concurrent_downloads
         self.max_tasks_per_user = max_tasks_per_user
         self.progress_update_seconds = progress_update_seconds
+        self.task_timeout_seconds = task_timeout_seconds
         self._queue: asyncio.Queue[DownloadTask] = asyncio.Queue(maxsize=max_queue_size)
         self._tasks: dict[str, DownloadTask] = {}
         self._workers: list[asyncio.Task] = []
@@ -144,9 +146,16 @@ class DownloadManager:
             task = await self._queue.get()
             try:
                 await self._execute_task(task, worker_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Worker %s crashed on task %s", worker_id, task.task_id)
             finally:
                 self._tasks.pop(task.task_id, None)
                 self._queue.task_done()
+
+    def active_work_dirs(self) -> set[str]:
+        return {task.work_dir for task in self._tasks.values() if task.work_dir}
 
     async def _execute_task(self, task: DownloadTask, worker_id: int) -> None:
         try:
@@ -166,7 +175,13 @@ class DownloadManager:
         task.status = TaskStatus.DOWNLOADING
         task.phase = "Подготовка загрузки"
         task.started_at = time.time()
-        await self.processor(task)
+        try:
+            async with asyncio.timeout(self.task_timeout_seconds):
+                await self.processor(task)
+        except TimeoutError as exc:
+            if task.cancel_event.is_set():
+                raise DownloadCancelled("Загрузка отменена пользователем") from exc
+            raise TimeoutError(str(exc) or "Task timeout") from exc
         if task.cancel_event.is_set():
             raise DownloadCancelled("Загрузка отменена пользователем")
         task.status = TaskStatus.COMPLETED
@@ -223,25 +238,23 @@ class DownloadManager:
         last_progress: dict[str, tuple] = {}
         while True:
             await asyncio.sleep(self.progress_update_seconds)
-            for task in list(self._tasks.values()):
-                if task.silent or task.status not in ACTIVE_STATUSES:
-                    continue
-                current = (task.status, task.phase, round(task.progress, 2), task.speed, task.eta)
-                if current == last_progress.get(task.task_id):
-                    continue
-                try:
-                    await self.progress_reporter(task)
-                    last_progress[task.task_id] = current
-                except Exception as exc:
-                    logger.debug("Cannot report task %s progress: %s", task.task_id, exc)
-            active_ids = set(self._tasks)
-            for task_id in set(last_progress) - active_ids:
-                last_progress.pop(task_id, None)
+            try:
+                await self._report_progress(last_progress)
+            except Exception as exc:
+                logger.warning("Progress loop iteration failed: %s", exc)
 
-    @staticmethod
-    def format_time(seconds: float) -> str:
-        if seconds < 60:
-            return f"{seconds:.0f} сек"
-        if seconds < 3600:
-            return f"{seconds / 60:.1f} мин"
-        return f"{seconds / 3600:.1f} ч"
+    async def _report_progress(self, last_progress: dict[str, tuple]) -> None:
+        for task in list(self._tasks.values()):
+            if task.silent or task.status not in ACTIVE_STATUSES:
+                continue
+            current = (task.status, task.phase, round(task.progress, 2), task.speed, task.eta)
+            if current == last_progress.get(task.task_id):
+                continue
+            try:
+                await self.progress_reporter(task)
+                last_progress[task.task_id] = current
+            except Exception as exc:
+                logger.debug("Cannot report task %s progress: %s", task.task_id, exc)
+        active_ids = set(self._tasks)
+        for task_id in set(last_progress) - active_ids:
+            last_progress.pop(task_id, None)

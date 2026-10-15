@@ -9,8 +9,8 @@ from urllib.parse import urljoin, urlsplit
 import aiohttp
 
 from .errors import VideoInfoError
-from .extractor import youtube_client
-from .tiktok_fallback import fetch_tiktok_video_info, is_tiktok_url
+from .isolated import run_job
+from .tiktok_fallback import is_tiktok_url
 
 logger = logging.getLogger(__name__)
 
@@ -20,96 +20,69 @@ class VideoInfoService:
         self,
         cookies_file: Path,
         playlist_limit: int = 25,
-        max_concurrent_requests: int = 1,
+        max_concurrent_requests: int = 3,
+        timeout_seconds: int = 90,
     ):
         self.cookies_file = cookies_file
         self.playlist_limit = playlist_limit
+        self.timeout_seconds = timeout_seconds
         self._semaphore = asyncio.Semaphore(max_concurrent_requests)
-        self._pending: set[asyncio.Task] = set()
 
     async def resolve_url(self, url: str) -> str:
         if not is_tiktok_url(url) or "/video/" in url or "/photo/" in url:
             return url
         original = url
-        await self._acquire_slot()
         try:
-            try:
-                async with asyncio.timeout(15):
-                    async with aiohttp.ClientSession() as session:
-                        for _ in range(5):
-                            parsed = urlsplit(url)
-                            if (
-                                parsed.scheme != "https"
-                                or parsed.username
-                                or parsed.password
-                                or parsed.port not in (None, 443)
-                                or not is_tiktok_url(url)
-                            ):
-                                raise VideoInfoError("Unsafe TikTok redirect")
-                            async with session.get(url, allow_redirects=False) as response:
-                                if response.status not in {301, 302, 303, 307, 308}:
-                                    return url
-                                location = response.headers.get("Location")
-                                if not location:
-                                    return url
-                                url = urljoin(url, location)
-                        raise VideoInfoError("Too many TikTok redirects")
-            except (aiohttp.ClientError, TimeoutError):
-                return original
+            async with asyncio.timeout(15), aiohttp.ClientSession() as session:
+                for _ in range(5):
+                    parsed = urlsplit(url)
+                    if (
+                        parsed.scheme != "https"
+                        or parsed.username
+                        or parsed.password
+                        or parsed.port not in (None, 443)
+                        or not is_tiktok_url(url)
+                    ):
+                        raise VideoInfoError("Unsafe TikTok redirect")
+                    async with session.get(url, allow_redirects=False) as response:
+                        if response.status not in {301, 302, 303, 307, 308}:
+                            return url
+                        location = response.headers.get("Location")
+                        if not location:
+                            return url
+                        url = urljoin(url, location)
+                raise VideoInfoError("Too many TikTok redirects")
+        except (aiohttp.ClientError, TimeoutError):
+            return original
+
+    async def fetch(self, url: str) -> dict[str, Any]:
+        try:
+            async with asyncio.timeout(60):
+                await self._semaphore.acquire()
+        except TimeoutError as exc:
+            raise VideoInfoError("Проверка ссылок занята. Попробуйте через минуту.") from exc
+        try:
+            event = await run_job(
+                {
+                    "op": "info",
+                    "url": url,
+                    "cookies": str(self.cookies_file) if self.cookies_file.is_file() else None,
+                    "playlist_limit": self.playlist_limit,
+                },
+                deadline=self.timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise VideoInfoError("Metadata lookup timeout") from exc
+        except VideoInfoError:
+            raise
+        except Exception as exc:
+            raise VideoInfoError(str(exc)) from exc
         finally:
             self._semaphore.release()
-
-    def _options(self) -> dict[str, Any]:
-        options: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "extract_flat": "in_playlist",
-            "socket_timeout": 20,
-            "retries": 3,
-            "extractor_retries": 3,
-            "playlistend": self.playlist_limit,
-        }
-        if self.cookies_file.is_file():
-            options["cookiefile"] = str(self.cookies_file)
-        return options
-
-    def _fetch_sync(self, url: str) -> dict[str, Any]:
-        try:
-            with youtube_client(self._options()) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception as exc:
-            if is_tiktok_url(url):
-                try:
-                    return fetch_tiktok_video_info(url, error=str(exc))
-                except Exception as fallback_exc:
-                    raise VideoInfoError(f"{exc}; TikTok fallback: {fallback_exc}") from exc
-            raise VideoInfoError(str(exc)) from exc
+        info = event.get("info")
         if not isinstance(info, dict) or not info:
             raise VideoInfoError("Источник не вернул информацию о медиа")
         return info
-
-    async def fetch(self, url: str) -> dict[str, Any]:
-        await self._acquire_slot()
-        operation = asyncio.create_task(asyncio.to_thread(self._fetch_sync, url))
-        self._pending.add(operation)
-        operation.add_done_callback(self._finished)
-        try:
-            return await asyncio.wait_for(asyncio.shield(operation), timeout=90)
-        except TimeoutError as exc:
-            raise VideoInfoError("Metadata lookup timeout") from exc
-
-    async def _acquire_slot(self) -> None:
-        try:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=2)
-        except TimeoutError as exc:
-            raise VideoInfoError("Проверка ссылок занята. Попробуйте через минуту.") from exc
-
-    def _finished(self, operation: asyncio.Task) -> None:
-        self._pending.discard(operation)
-        self._semaphore.release()
-        if not operation.cancelled():
-            operation.exception()
 
 
 def _positive_int(value: object) -> int | None:

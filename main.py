@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
+import threading
+import time
 from contextlib import AsyncExitStack
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -12,7 +15,7 @@ from typing import IO
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 
@@ -22,6 +25,7 @@ from src.core.media_downloader import MediaDownloader
 from src.core.media_pipeline import MediaPipeline
 from src.core.selection_store import SelectionStore
 from src.core.telegram_gateway import TelegramGateway
+from src.core.updater import ToolUpdater
 from src.core.user_stats import UserStatsManager
 from src.core.video_info import VideoInfoService
 from src.handlers.admin_handlers import build_admin_router
@@ -31,6 +35,7 @@ from src.handlers.error_handlers import ErrorHandler
 from src.utils.file_utils import cleanup_old_files
 
 logger = logging.getLogger(__name__)
+WATCHDOG_TIMEOUT_SECONDS = 180
 
 
 def configure_logging(settings: config.Settings) -> None:
@@ -51,7 +56,9 @@ def configure_logging(settings: config.Settings) -> None:
 def acquire_instance_lock(path: Path | None = None) -> IO[str] | None:
     import fcntl
 
-    lock_path = path or Path(__file__).resolve().with_name(".resave.lock")
+    lock_path = path or Path(
+        os.environ.get("RESAVE_LOCK_PATH", str(Path(__file__).resolve().with_name(".resave.lock")))
+    )
     handle = lock_path.open("a+", encoding="ascii")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -95,15 +102,76 @@ async def setup_commands(bot: Bot, admin_ids: tuple[int, ...]) -> None:
 
 def build_bot(settings: config.Settings) -> tuple[Bot, Bot | None]:
     if not settings.bot_api_base_url:
-        return Bot(token=settings.bot_token), None
+        return Bot(token=settings.bot_token, session=AiohttpSession(timeout=120)), None
     api = TelegramAPIServer.from_base(
         settings.bot_api_base_url,
         is_local=settings.bot_api_is_local,
     )
-    session = AiohttpSession(api=api, timeout=600)
-    bot = Bot(token=settings.bot_token, session=session)
-    cloud_bot = Bot(token=settings.bot_token) if settings.bot_api_is_local else None
+    bot = Bot(token=settings.bot_token, session=AiohttpSession(api=api, timeout=120))
+    cloud_bot = (
+        Bot(token=settings.bot_token, session=AiohttpSession(timeout=120))
+        if settings.bot_api_is_local
+        else None
+    )
     return bot, cloud_bot
+
+
+def start_watchdog(loop: asyncio.AbstractEventLoop) -> asyncio.Task:
+    heartbeat = [time.monotonic()]
+
+    async def beat() -> None:
+        while True:
+            heartbeat[0] = time.monotonic()
+            await asyncio.sleep(5)
+
+    def watch() -> None:
+        while loop.is_running():
+            time.sleep(15)
+            stalled = time.monotonic() - heartbeat[0]
+            if stalled > WATCHDOG_TIMEOUT_SECONDS:
+                logger.critical("Event loop is frozen for %.0f s; restarting", stalled)
+                logging.shutdown()
+                os._exit(3)
+
+    threading.Thread(target=watch, name="watchdog", daemon=True).start()
+    return asyncio.create_task(beat(), name="watchdog-heartbeat")
+
+
+async def periodic_cleanup(settings: config.Settings, manager: DownloadManager) -> None:
+    max_age_hours = (settings.download_timeout_seconds + 3600) / 3600
+    while True:
+        await asyncio.sleep(1800)
+        try:
+            await asyncio.to_thread(
+                cleanup_old_files,
+                settings.temp_dir,
+                max_age_hours=max_age_hours,
+                keep=manager.active_work_dirs(),
+            )
+        except Exception as exc:
+            logger.warning("Temporary files cleanup failed: %s", exc)
+
+
+async def wait_for_api(bot: Bot, settings: config.Settings, attempts: int = 20) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            await bot.get_me()
+            return
+        except TelegramUnauthorizedError as exc:
+            raise RuntimeError("Telegram отклонил BOT_TOKEN: проверьте токен в .env") from exc
+        except TelegramNetworkError as exc:
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"Telegram Bot API недоступен: {settings.bot_api_base_url or 'api.telegram.org'}"
+                ) from exc
+            logger.warning("Telegram Bot API is not ready (%s), retrying", exc)
+            await asyncio.sleep(3)
+
+
+async def cancel_task(task: asyncio.Task) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def run(settings: config.Settings | None = None) -> None:
@@ -112,7 +180,15 @@ async def run(settings: config.Settings | None = None) -> None:
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
     cleanup_old_files(str(settings.temp_dir), max_age_hours=24)
 
+    updater = ToolUpdater(
+        settings.packages_dir,
+        interval_hours=settings.tools_update_hours,
+        enabled=settings.tools_auto_update,
+    )
+    updater.activate()
+
     async with AsyncExitStack() as cleanup:
+        cleanup.push_async_callback(cancel_task, start_watchdog(asyncio.get_running_loop()))
         bot, cloud_bot = build_bot(settings)
         cleanup.push_async_callback(bot.session.close)
         if cloud_bot:
@@ -140,13 +216,15 @@ async def run(settings: config.Settings | None = None) -> None:
             max_queue_size=settings.max_queue_size,
             max_tasks_per_user=settings.max_tasks_per_user,
             progress_update_seconds=settings.progress_update_seconds,
+            task_timeout_seconds=settings.download_timeout_seconds + 900,
         )
         cleanup.push_async_callback(manager.stop)
         selections = SelectionStore(settings.selection_ttl_seconds)
         info_service = VideoInfoService(
             settings.cookies_file,
             settings.max_playlist_items,
-            max_concurrent_requests=1,
+            max_concurrent_requests=settings.max_concurrent_lookups,
+            timeout_seconds=settings.lookup_timeout_seconds,
         )
         dispatcher = Dispatcher(storage=MemoryStorage())
         dispatcher.errors.register(ErrorHandler(telegram).__call__)
@@ -165,15 +243,7 @@ async def run(settings: config.Settings | None = None) -> None:
             )
         )
 
-        try:
-            await bot.get_me()
-        except TelegramNetworkError as exc:
-            if settings.bot_api_base_url:
-                raise RuntimeError(
-                    f"Telegram Bot API недоступен: {settings.bot_api_base_url}. "
-                    "Запустите локальный API или уберите BOT_API_BASE_URL."
-                ) from exc
-            raise
+        await wait_for_api(bot, settings)
 
         if not downloader.ffmpeg_available:
             logger.warning("FFmpeg not found; audio, GIF and stream merging may fail")
@@ -183,6 +253,10 @@ async def run(settings: config.Settings | None = None) -> None:
                 settings.effective_upload_limit // (1024 * 1024),
             )
         await manager.start()
+        cleanup.push_async_callback(
+            cancel_task, asyncio.create_task(periodic_cleanup(settings, manager))
+        )
+        cleanup.push_async_callback(cancel_task, asyncio.create_task(updater.run()))
         await setup_commands(bot, settings.admin_ids)
         logger.info(
             "ReSave started: workers=%s local_bot_api=%s upload_limit=%s MB",

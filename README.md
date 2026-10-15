@@ -16,7 +16,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-31363f?style=flat-square" alt="Apache 2.0"></a>
 </p>
 
-[Возможности](#возможности) · [Запуск](#запуск) · [Настройки](#настройки)
+[Возможности](#возможности) · [Запуск](#запуск-на-сервере) · [Настройки](#настройки)
 
 </div>
 
@@ -66,82 +66,65 @@
 
 </details>
 
-## Запуск
+## Запуск на сервере
 
-**Нужны:** Python 3.11+, FFmpeg и ffprobe.
+**Нужны:** Docker с Compose. Хватает 4 ГБ RAM и ~9 ГБ диска.
 
 ```bash
 git clone https://github.com/ReNothingg/ReSave.git
 cd ReSave
-
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Вставьте токен бота в `.env`:
-
-```env
-BOT_TOKEN=ваш_токен
-```
-
-Запустите:
+Заполните в `.env` `BOT_TOKEN`, `ADMIN_IDS`, `TELEGRAM_API_ID` и `TELEGRAM_API_HASH`
+(последние два — на [my.telegram.org/apps](https://my.telegram.org/apps)), затем:
 
 ```bash
-.venv/bin/python main.py
+docker compose up -d --build
 ```
+
+Поднимутся два контейнера: бот и локальный Telegram Bot API (файлы до 2 ГБ).
+Оба перезапускаются сами после падения и после перезагрузки сервера.
+
+| Действие | Команда |
+| :--- | :--- |
+| Логи | `docker compose logs -f --tail 100 bot` |
+| Перезапуск | `docker compose restart bot` |
+| Обновление кода | `git pull && docker compose up -d --build` |
+| Загрузить cookies | `docker compose cp cookies.txt bot:/data/cookies.txt` |
+
+## Надёжность
+
+- Каждая загрузка и проверка ссылки идёт в отдельном процессе. Зависший yt-dlp
+  убивается по таймауту или при отсутствии прогресса и не блокирует очередь.
+- yt-dlp, yt-dlp-ejs и gallery-dl обновляются сами каждые несколько часов,
+  без перезапуска бота: сайты часто ломают старые версии.
+- Если не получилось в выбранном качестве, бот пробует качество ниже и любой доступный формат.
+- Перед загрузкой и во время неё проверяется свободное место на диске.
+- Временные файлы чистятся каждые 30 минут.
+- Если бот зависнет целиком, он сам завершится, и Docker его перезапустит.
 
 ## Настройки
 
-Все параметры — в [`.env.example`](.env.example). Относительные пути считаются от корня проекта.
+Все параметры — в [`.env.example`](.env.example).
 
 | Параметр | Назначение |
 | :--- | :--- |
 | `ADMIN_IDS` | ID администраторов через запятую |
-| `MAX_CONCURRENT_DOWNLOADS` | Параллельные загрузки · по умолчанию **2** |
-| `MAX_TASKS_PER_USER` | Задачи одного пользователя · **10** |
+| `MAX_CONCURRENT_DOWNLOADS` | Параллельные загрузки · **1** для сервера на 4 ГБ |
+| `MAX_TASKS_PER_USER` | Задачи одного пользователя |
 | `MAX_PLAYLIST_ITEMS` | Видео из одного плейлиста · **25** |
 | `MAX_FILE_SIZE` | Максимальный размер файла в байтах |
-| `COOKIES_FILE` | Файл cookies для публикаций с ограниченным доступом |
-
-Лимит очереди пользователя действует и на плейлисты. Фактический размер файла ограничен выбранным Bot API.
-
-<details>
-<summary><strong>Большие файлы: локальный Bot API</strong></summary>
-
-Для файлов больше облачного лимита используется локальный Telegram Bot API.
-
-Добавьте в `.env`:
-
-```env
-BOT_API_BASE_URL=http://127.0.0.1:8081
-BOT_API_IS_LOCAL=true
-BOT_API_USE_FILE_URI=false
-
-TELEGRAM_API_ID=ваш_api_id
-TELEGRAM_API_HASH=ваш_api_hash
-
-MAX_FILE_SIZE=2097152000
-SEND_AS_DOC_LIMIT=2097152000
-```
-
-Запустите API через Docker, затем бота:
-
-```bash
-docker compose up -d telegram-bot-api
-.venv/bin/python main.py
-```
-
-`BOT_API_USE_FILE_URI=true` нужен только при общей файловой системе бота и API. Для Docker оставьте `false`.
-
-</details>
+| `MIN_FREE_DISK_MB` | Сколько места оставлять свободным · **512** |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Через сколько секунд без прогресса загрузка прерывается |
+| `TOOLS_AUTO_UPDATE` | Автообновление yt-dlp и gallery-dl |
 
 <details>
 <summary><strong>Cookies и хранение данных</strong></summary>
 
 - Cookies в формате Netscape — `cookies.txt`. Бот использует временные копии.
 - Статистика — `database.db` (SQLite).
-- Временные файлы — `temp_downloads/`.
+- Данные бота в Docker лежат в томе `bot-data` (`/data` внутри контейнера).
 - Очередь и меню хранятся в памяти: после перезапуска незавершённые запросы нужно отправить снова.
 
 </details>
@@ -155,10 +138,13 @@ docker compose up -d telegram-bot-api
 Если API отклоняет эмодзи, бот сохраняет Rich Messages и цветные кнопки, заменяя иконки на обычные.
 Для API без Rich Messages предусмотрено HTML-оформление.
 
+Локальный запуск без Docker (нужны Python 3.11+, FFmpeg и ffprobe):
+
 ```bash
-.venv/bin/python -m pip install 'ruff>=0.9,<1'
-.venv/bin/python -m ruff check .
-.venv/bin/python -m compileall -q main.py config.py src
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt ruff
+.venv/bin/python main.py
+.venv/bin/ruff check .
 ```
 
 | Путь | Ответственность |
@@ -166,9 +152,9 @@ docker compose up -d telegram-bot-api
 | `main.py` | Запуск и сборка сервисов |
 | `src/handlers/` | Команды, меню и административные действия |
 | `src/core/` | Очередь, скачивание, обработка и отправка |
+| `src/core/ytdlp_worker.py` | Изолированный процесс yt-dlp |
 | `src/utils/` | Форматирование текста и работа с файлами |
 
-Основные зависимости закреплены в `requirements.txt`. После их обновления проверяйте скачивание с нужных сайтов.
 
 </details>
 

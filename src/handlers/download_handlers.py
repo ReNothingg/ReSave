@@ -20,13 +20,7 @@ from ..core.selection_store import SelectionStore
 from ..core.telegram_gateway import TelegramGateway
 from ..core.tiktok_photo_handler import is_tiktok_photo_url
 from ..core.url_tools import extract_url, is_public_url_target, normalize_url
-from ..core.video_info import (
-    VideoInfoError,
-    VideoInfoService,
-    collect_playlist_entries,
-    collect_resolutions,
-    compact_media_info,
-)
+from ..core.video_info import VideoInfoError, VideoInfoService, collect_resolutions
 from ..utils.presentation import panel, user_error
 from .media_menu import available_choices, media_keyboard, media_text
 
@@ -45,7 +39,7 @@ async def _enqueue_playlist(
     silent: bool,
 ) -> tuple[int, int, str | None]:
     queued = 0
-    entries = collect_playlist_entries(info, settings.max_playlist_items)
+    entries = list(info.get("entries") or [])[: settings.max_playlist_items]
     stop_reason: str | None = None
     for entry in entries:
         entry_url = normalize_url(str(entry["url"]))
@@ -103,7 +97,11 @@ class DownloadHandlers:
                 status.chat.id, status.message_id, "Проверка отменена.", reply_markup=None
             )
             raise
-        except (VideoInfoError, ValueError) as exc:
+        except Exception as exc:
+            if not isinstance(exc, (VideoInfoError, ValueError)):
+                logger.exception("Cannot prepare %s", url)
+            else:
+                logger.info("Cannot prepare %s: %s", url, exc)
             await self.telegram.edit_status(
                 status.chat.id, status.message_id, user_error(exc), reply_markup=None
             )
@@ -163,7 +161,6 @@ class DownloadHandlers:
             )
             return
 
-        info = compact_media_info(info)
         resolutions = collect_resolutions(info)
         selection = self.selections.put(
             user_id=message.from_user.id,
@@ -203,7 +200,7 @@ class DownloadHandlers:
         else:
             try:
                 info = await self.info_service.fetch(url)
-            except VideoInfoError as exc:
+            except Exception as exc:
                 logger.info("Unsupported group URL in chat %s: %s", message.chat.id, exc)
                 return
             if info.get("_type") == "playlist":
@@ -225,7 +222,6 @@ class DownloadHandlers:
                     reason,
                 )
                 return
-            info = compact_media_info(info)
             action = DownloadAction.MEDIUM
 
         task = DownloadTask(
