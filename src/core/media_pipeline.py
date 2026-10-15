@@ -12,7 +12,7 @@ from config import Settings
 
 from ..utils.cards import progress_card
 from ..utils.file_utils import sanitize_filename
-from ..utils.presentation import format_duration, media_caption
+from ..utils.presentation import format_duration, format_size, media_caption
 from ..utils.theme import EFFECTS, emoji
 from .errors import DownloadCancelled, FileTooLarge
 from .ffmpeg_tools import convert_gif, positive_seconds, probe_video
@@ -175,6 +175,14 @@ class MediaPipeline:
         quality = []
         if metadata.get("height") and metadata.get("width"):
             quality.append(f"{min(metadata['height'], metadata['width'])}p")
+        if task.oversized:
+            limit = format_size(self.settings.effective_upload_limit)
+            got = quality[0] if quality else "качество ниже"
+            downgrade = (
+                f"{emoji('warning')} {task.oversized[0]} больше лимита Telegram ({limit}), "
+                f"поэтому прислал {got}."
+            )
+            note = f"{note}\n{downgrade}" if note else downgrade
         caption = await self._caption(task, kind="video", size_mb=size_mb, extra=quality, note=note)
         if source.stat().st_size > self.settings.effective_send_as_doc_limit:
             await self.telegram.send_document(

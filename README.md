@@ -157,7 +157,21 @@ TEMP_DIR=temp_local
 uv run --no-project --python 3.12 --with-requirements requirements.txt python main.py
 ```
 
-uv сам скачает Python и зависимости, ничего настраивать не нужно. Без локального Bot API лимит файла — 50 МБ.
+uv сам скачает Python и зависимости, ничего настраивать не нужно.
+
+Без локального Bot API лимит файла — 50 МБ, и длинные видео придут в низком качестве.
+Чтобы получить лимит 2 ГБ, поднимите Bot API в Docker и добавьте в `.env.local`:
+
+```bash
+docker compose up -d telegram-bot-api
+```
+
+```env
+BOT_API_BASE_URL=http://127.0.0.1:8081
+BOT_API_IS_LOCAL=true
+MAX_FILE_SIZE=2097152000
+SEND_AS_DOC_LIMIT=2097152000
+```
 
 | Путь | Ответственность |
 | :--- | :--- |

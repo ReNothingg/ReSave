@@ -80,14 +80,12 @@ def estimated_size(info: dict, height: int) -> int:
         return 0
     preferred = [item for item in candidates if str(item.get("vcodec", "")).startswith("avc1")]
     pool = preferred or candidates
-    sizes = []
-    duration = info.get("duration") or 0
-    for item in pool:
-        size = item.get("filesize") or 0
-        if not size and item.get("tbr") and duration:
-            size = float(item["tbr"]) * 1000 / 8 * float(duration)
-        if size:
-            sizes.append(float(size))
+    explicit = [float(item["filesize"]) for item in pool if item.get("filesize")]
+    duration = float(info.get("duration") or 0)
+    estimated = [
+        float(item["tbr"]) * 1000 / 8 * duration for item in pool if item.get("tbr") and duration
+    ]
+    sizes = explicit or estimated
     if not sizes:
         return 0
     return round(max(sizes) + float(info.get("audio_size") or 0))
@@ -206,7 +204,12 @@ def media_text(
     extras = media_extras(info, ffmpeg_available)
     if extras:
         body += "<p>" + " · ".join(extras) + "</p>"
-    if upload_limit:
+    if upload_limit and upload_limit <= 50 * 1024 * 1024 and (info.get("duration") or 0) > 300:
+        body += (
+            f"<p>{emoji('warning')} <i>Лимит файла — {format_size(upload_limit)}: "
+            "длинное видео в высоком качестве не влезет, кнопки выше лимита неактивны.</i></p>"
+        )
+    elif upload_limit:
         body += f"<p><i>Лимит файла — {format_size(upload_limit)}</i></p>"
     fallback = [f"{label}: {value}" for label, value in facts] + ["", hint]
     content = card(title, body, fallback, icon="video" if has_video else "audio")

@@ -158,20 +158,15 @@ class MediaDownloader:
             "Downloading task=%s action=%s variant=%s", task.task_id, task.action, variant.label
         )
         try:
-            try:
-                return await self._download_variant(task, work_dir, variant)
-            except JobFailed as exc:
-                if "403" not in str(exc):
-                    raise
-                logger.info("Retrying variant after 403 task=%s %s", task.task_id, variant.label)
-                self._clear(work_dir)
-                return await self._download_variant(task, work_dir, variant)
+            return await self._download_with_retry(task, work_dir, variant)
         except (DownloadCancelled, TimeoutError):
             raise
         except FileTooLarge as exc:
             logger.info("Variant too large task=%s %s: %s", task.task_id, variant.label, exc)
             errors.append(f"{variant.label}: {exc}")
             state["too_large"] = True
+            if variant.label.endswith("p"):
+                task.oversized.append(variant.label)
             return None
         except Exception as exc:
             logger.warning("Variant failed task=%s %s: %s", task.task_id, variant.label, exc)
@@ -184,6 +179,18 @@ class MediaDownloader:
             if not self._can_fallback(exc):
                 raise
             return None
+
+    async def _download_with_retry(
+        self, task: DownloadTask, work_dir: Path, variant: DownloadVariant
+    ) -> Path:
+        try:
+            return await self._download_variant(task, work_dir, variant)
+        except JobFailed as exc:
+            if "403" not in str(exc):
+                raise
+            logger.info("Retrying variant after 403 task=%s %s", task.task_id, variant.label)
+            self._clear(work_dir)
+            return await self._download_variant(task, work_dir, variant)
 
     async def _download_variant(
         self, task: DownloadTask, work_dir: Path, variant: DownloadVariant

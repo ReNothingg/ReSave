@@ -12,6 +12,8 @@ services:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Set TELEGRAM_API_ID in .env}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Set TELEGRAM_API_HASH in .env}
       TELEGRAM_LOCAL: "1"
+    ports:
+      - "127.0.0.1:8081:8081"
     volumes:
       - bot-api-data:/var/lib/telegram-bot-api
     mem_limit: 512m

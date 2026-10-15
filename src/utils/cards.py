@@ -256,6 +256,10 @@ def _stages(task: DownloadTask, stage: int) -> list[tuple[str, bool]]:
 
 def _download_section(task: DownloadTask) -> tuple[str, list[str]]:
     if task.progress <= 0 and not task.downloaded_bytes:
+        if task.oversized:
+            tried = ", ".join(task.oversized[:4])
+            text = f"{tried} — больше лимита, подбираю качество ниже…"
+            return f"<p><i>{escape(text)}</i></p>", [text]
         return "<p><i>Подключаюсь к источнику…</i></p>", ["Подключаюсь к источнику…"]
     percent = f"{min(task.progress, 0.99):.0%}"
     body = f"<p><code>{smooth_bar(task.progress)}</code> <b>{percent}</b></p>"
@@ -273,7 +277,12 @@ def _download_section(task: DownloadTask) -> tuple[str, list[str]]:
     if task.fragments and not task.total_bytes:
         rows.append(("Фрагменты", f"{task.fragments[0]} из {task.fragments[1]}"))
     body += metrics_table(rows)
-    return body, [f"{percent}"] + [f"{label}: {value}" for label, value in rows]
+    lines = [f"{percent}"] + [f"{label}: {value}" for label, value in rows]
+    if task.oversized:
+        tried = ", ".join(task.oversized[:4])
+        body += f"<blockquote>{emoji('warning')} {escape(tried)} — больше лимита, качаю ниже</blockquote>"
+        lines.append(f"{tried} — больше лимита, качаю ниже")
+    return body, lines
 
 
 def progress_card(task: DownloadTask) -> MessageContent:

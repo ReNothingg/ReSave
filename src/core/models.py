@@ -63,6 +63,7 @@ class DownloadTask:
     fragments: tuple[int, int] | None = None
     phase_started_at: float = field(default_factory=time.time)
     queue_position: int | None = None
+    oversized: list[str] = field(default_factory=list)
     error: str | None = None
     work_dir: str | None = None
     created_at: float = field(default_factory=time.time)
