@@ -1,44 +1,10 @@
 from __future__ import annotations
 
-from aiogram import Bot, methods
-from aiogram.methods.base import TelegramMethod
-from aiogram.types import InlineKeyboardMarkup, Message, ReplyParameters
-from aiogram.types.base import TelegramObject
+from aiogram import Bot
+from aiogram.methods import EditMessageText, SendRichMessage
+from aiogram.types import InputRichMessage, Message
 
-try:
-    from aiogram.types import InputRichMessage
-except ImportError:
-
-    class InputRichMessage(TelegramObject):
-        html: str
-
-
-class _SendRichMessage(TelegramMethod[Message]):
-    __returning__ = Message
-    __api_method__ = "sendRichMessage"
-
-    chat_id: int | str
-    rich_message: InputRichMessage
-    reply_parameters: ReplyParameters | None = None
-    reply_markup: InlineKeyboardMarkup | None = None
-
-
-class _EditRichMessage(TelegramMethod[Message | bool]):
-    __returning__ = Message | bool
-    __api_method__ = "editMessageText"
-
-    chat_id: int | str
-    message_id: int
-    rich_message: InputRichMessage
-    reply_markup: InlineKeyboardMarkup | None = None
-
-
-SendRichMessage = getattr(methods, "SendRichMessage", _SendRichMessage)
-EditRichMessage = (
-    methods.EditMessageText
-    if "rich_message" in methods.EditMessageText.model_fields
-    else _EditRichMessage
-)
+__all__ = ["InputRichMessage", "send_rich"]
 
 
 async def send_rich(
@@ -52,5 +18,5 @@ async def send_rich(
     if message_id is None:
         method = SendRichMessage(chat_id=chat_id, **params)
     else:
-        method = EditRichMessage(chat_id=chat_id, message_id=message_id, **params)
+        method = EditMessageText(chat_id=chat_id, message_id=message_id, **params)
     return await bot(method, request_timeout=request_timeout)

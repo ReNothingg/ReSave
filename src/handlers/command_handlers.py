@@ -26,7 +26,9 @@ class Screen:
     keyboard: InlineKeyboardMarkup
 
 
-def menu_keyboard(user_id: int, *, cancellable: bool = False) -> InlineKeyboardMarkup:
+def menu_keyboard(
+    user_id: int, *, cancellable: bool = False, username: str | None = None
+) -> InlineKeyboardMarkup:
     rows = [
         [
             button(
@@ -43,9 +45,27 @@ def menu_keyboard(user_id: int, *, cancellable: bool = False) -> InlineKeyboardM
             button("Главная", icon="brand", callback_data=f"ui:home:{user_id}"),
         ],
     ]
+    if username:
+        rows.append(
+            [
+                button(
+                    "Добавить в группу",
+                    icon="chat",
+                    url=f"https://t.me/{username}?startgroup=true",
+                )
+            ]
+        )
     if cancellable:
         rows.insert(
-            0, [button("✕ Отменить загрузки", style="danger", callback_data=f"ui:cancel:{user_id}")]
+            0,
+            [
+                button(
+                    "Отменить загрузки",
+                    icon="cross",
+                    style="danger",
+                    callback_data=f"ui:cancel:{user_id}",
+                )
+            ],
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -76,8 +96,11 @@ class CommandHandlers:
         router.callback_query.register(self.legacy_cancel, F.data == "cancel_all_downloads")
         return router
 
-    async def screen(self, action: str, user_id: int, chat_id: int) -> Screen:
-        keyboard = menu_keyboard(user_id)
+    async def screen(
+        self, action: str, user_id: int, chat_id: int, first_name: str | None = None
+    ) -> Screen:
+        username = await self.telegram.username()
+        keyboard = menu_keyboard(user_id, username=username if action == "home" else None)
         if action == "help":
             return Screen(
                 help_card(
@@ -103,14 +126,15 @@ class CommandHandlers:
                 for t in self.manager.snapshot(user_id=user_id, chat_id=chat_id)
             ):
                 lines.append("Файл уже отправляется. Дождитесь завершения.")
-            return Screen(panel("Отмена", lines, icon="done"), keyboard)
+            return Screen(panel("Отмена", lines, icon="check"), keyboard)
         return Screen(
             home_card(
                 upload_limit=self.settings.effective_upload_limit,
                 playlist_limit=self.settings.max_playlist_items,
                 user_limit=self.settings.max_tasks_per_user,
+                first_name=first_name,
             ),
-            keyboard,
+            menu_keyboard(user_id, username=username),
         )
 
     def status_screen(self, user_id: int, chat_id: int) -> Screen:
@@ -123,7 +147,9 @@ class CommandHandlers:
     async def show(self, message: Message, action: str) -> None:
         if message.from_user is None:
             return
-        screen = await self.screen(action, message.from_user.id, message.chat.id)
+        screen = await self.screen(
+            action, message.from_user.id, message.chat.id, message.from_user.first_name
+        )
         await self.telegram.send_message(
             message.chat.id,
             screen.text,
@@ -135,7 +161,7 @@ class CommandHandlers:
         await state.clear()
         if message.from_user and message.chat.type == "private":
             await asyncio.to_thread(self.stats.ensure_user, message.from_user.id)
-        await self.show(message, "start")
+        await self.show(message, "home")
 
     async def help(self, message: Message) -> None:
         await self.show(message, "help")
@@ -164,7 +190,9 @@ class CommandHandlers:
         if parts[1] == "cancel":
             await state.clear()
         await self.telegram.answer_callback(call)
-        screen = await self.screen(parts[1], call.from_user.id, call.message.chat.id)
+        screen = await self.screen(
+            parts[1], call.from_user.id, call.message.chat.id, call.from_user.first_name
+        )
         await self.telegram.edit_status(
             call.message.chat.id,
             call.message.message_id,

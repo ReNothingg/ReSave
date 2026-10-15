@@ -51,6 +51,8 @@ class TelegramGateway:
         self.cloud_upload_limit = cloud_upload_limit
         self.rich_messages = rich_messages
         self.custom_emoji = custom_emoji
+        self.effects = True
+        self._username: str | None = None
 
     async def _retry(
         self,
@@ -135,12 +137,24 @@ class TelegramGateway:
         **kwargs,
     ):
         content = as_content(value)
-        for _ in range(3):
+        for _ in range(4):
             try:
                 return await self._retry(
-                    lambda: self._send_content(chat_id, message_id, content, kwargs)
+                    lambda content=content: self._send_content(chat_id, message_id, content, kwargs)
                 )
             except (TelegramBadRequest, TelegramNotFound) as exc:
+                if (
+                    self.rich_messages
+                    and content.rich_lite
+                    and not self._emoji_error(str(exc).lower())
+                ):
+                    logger.info("Rich media block rejected, sending without it: %s", exc)
+                    content = MessageContent(content.html, content.rich_lite)
+                    continue
+                if "ephemeral" in str(exc).lower() and kwargs.pop(
+                    "ephemeral_message_parameters", None
+                ):
+                    continue
                 if not self._downgrade(exc):
                     raise
         raise RuntimeError("Telegram rejected message formatting")
@@ -150,6 +164,9 @@ class TelegramGateway:
     ):
         params = dict(kwargs)
         params.pop("parse_mode", None)
+        if message_id is not None:
+            params.pop("ephemeral_message_parameters", None)
+            params.pop("message_effect_id", None)
         markup = params.get("reply_markup")
         if isinstance(markup, InlineKeyboardMarkup) and not self.custom_emoji:
             params["reply_markup"] = plain_icons(markup)
@@ -222,6 +239,8 @@ class TelegramGateway:
 
     def _media_kwargs(self, kwargs: dict) -> dict:
         result = dict(kwargs)
+        if not self.effects:
+            result.pop("message_effect_id", None)
         if not self.custom_emoji and isinstance(result.get("caption"), str):
             result["caption"] = without_custom_emoji(result["caption"])
         return result
@@ -230,11 +249,29 @@ class TelegramGateway:
         try:
             return await self._retry(operation)
         except TelegramBadRequest as exc:
-            if not self.custom_emoji or not self._emoji_error(str(exc).lower()):
+            value = str(exc).lower()
+            if "effect" in value and self.effects:
+                self.effects = False
+                logger.warning("Message effects unavailable: %s", exc)
+                return await self._media_request(operation)
+            if not self.custom_emoji or not self._emoji_error(value):
                 raise
             self.custom_emoji = False
             logger.warning("Custom emoji unavailable in media captions: %s", exc)
             return await self._retry(operation)
+
+    async def username(self) -> str | None:
+        if self._username is None:
+            try:
+                self._username = (await self.bot.me()).username or ""
+            except (TelegramAPIError, TimeoutError):
+                return None
+        return self._username or None
+
+    def _effect(self, kwargs: dict, effect: str | None) -> dict:
+        if effect and self.effects:
+            kwargs["message_effect_id"] = effect
+        return kwargs
 
     async def answer_callback(self, call: CallbackQuery, text: str | None = None) -> None:
         try:
@@ -282,6 +319,7 @@ class TelegramGateway:
         caption: str,
         reply_to: int | None,
         metadata: dict[str, int],
+        effect: str | None = None,
     ):
         kwargs = {
             "chat_id": chat_id,
@@ -292,6 +330,7 @@ class TelegramGateway:
             "request_timeout": 600,
             **metadata,
         }
+        self._effect(kwargs, effect)
         return await self._upload_with_fallback(
             path,
             lambda media: self.bot.send_video(video=media, **self._media_kwargs(kwargs)),
@@ -308,6 +347,7 @@ class TelegramGateway:
         performer: str | None,
         reply_to: int | None,
         duration: int | None,
+        effect: str | None = None,
     ):
         kwargs = {
             "chat_id": chat_id,
@@ -320,6 +360,7 @@ class TelegramGateway:
         }
         if duration:
             kwargs["duration"] = duration
+        self._effect(kwargs, effect)
         return await self._upload_with_fallback(
             path,
             lambda media: self.bot.send_audio(audio=media, **self._media_kwargs(kwargs)),

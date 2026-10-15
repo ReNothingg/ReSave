@@ -12,7 +12,8 @@ from config import Settings
 
 from ..utils.cards import progress_card
 from ..utils.file_utils import sanitize_filename
-from ..utils.presentation import media_caption
+from ..utils.presentation import format_duration, media_caption
+from ..utils.theme import EFFECTS, emoji
 from .errors import DownloadCancelled, FileTooLarge
 from .ffmpeg_tools import convert_gif, positive_seconds, probe_video
 from .media_downloader import MediaDownloader
@@ -22,6 +23,7 @@ from .tiktok_photo_handler import download_tiktok_photos
 from .user_stats import UserStatsManager
 
 logger = logging.getLogger(__name__)
+MILESTONES = {1, 10, 25, 50, 100, 250, 500, 1000}
 
 
 class MediaPipeline:
@@ -71,6 +73,45 @@ class MediaPipeline:
             progress_card(task),
         )
 
+    async def _milestone(self, task: DownloadTask) -> tuple[str | None, str | None]:
+        if task.chat_id < 0 or task.silent:
+            return None, None
+        try:
+            value = await asyncio.to_thread(self.stats.get_user_stats, task.user_id)
+        except Exception:
+            return None, None
+        upcoming = value.downloads_count + 1
+        if upcoming not in MILESTONES:
+            return None, None
+        if upcoming == 1:
+            return EFFECTS["party"], f"{emoji('party')} Первая загрузка! Присылайте ещё ссылки."
+        return EFFECTS["fire"], f"{emoji('trophy')} Это ваша {upcoming}-я загрузка!"
+
+    async def _caption(
+        self,
+        task: DownloadTask,
+        *,
+        kind: str,
+        size_mb: float | None = None,
+        extra: list[str] | None = None,
+        note: str | None = None,
+    ) -> str:
+        details = list(extra or [])
+        if task.info.get("uploader"):
+            details.insert(0, str(task.info["uploader"]))
+        duration = format_duration(task.info.get("duration"))
+        if duration and kind in {"video", "audio"}:
+            details.append(duration)
+        return media_caption(
+            task.title,
+            task.url,
+            kind=kind,
+            size_mb=size_mb,
+            details=details,
+            bot_username=await self.telegram.username(),
+            note=note,
+        )
+
     async def _set_phase(self, task: DownloadTask, status: TaskStatus, phase: str) -> None:
         if task.cancel_event.is_set():
             raise DownloadCancelled("Загрузка отменена пользователем")
@@ -89,7 +130,7 @@ class MediaPipeline:
             result = await convert_gif(self.settings, task, source, work_dir / "animation.gif")
             await self._set_phase(task, TaskStatus.UPLOADING, "Отправка GIF")
             size_mb = result.stat().st_size / (1024 * 1024)
-            caption = media_caption(task.title, task.url, kind="gif", size_mb=size_mb)
+            caption = await self._caption(task, kind="gif", size_mb=size_mb)
             try:
                 await self.telegram.send_animation(
                     task.chat_id, result, caption=caption, reply_to=task.reply_to_message_id
@@ -106,8 +147,11 @@ class MediaPipeline:
 
         size_mb = source.stat().st_size / (1024 * 1024)
         await self._set_phase(task, TaskStatus.UPLOADING, f"Отправка файла · {size_mb:.1f} МБ")
+        effect, note = await self._milestone(task)
         if task.action == DownloadAction.AUDIO:
-            caption = media_caption(task.title, task.url, kind="audio", size_mb=size_mb)
+            caption = await self._caption(
+                task, kind="audio", size_mb=size_mb, extra=["MP3"], note=note
+            )
             try:
                 await self.telegram.send_audio(
                     task.chat_id,
@@ -117,6 +161,7 @@ class MediaPipeline:
                     performer=task.info.get("uploader"),
                     reply_to=task.reply_to_message_id,
                     duration=self._duration(task.info),
+                    effect=effect,
                 )
             except TelegramBadRequest:
                 await self.telegram.send_document(
@@ -129,8 +174,11 @@ class MediaPipeline:
             await self._record(task, "audio", size_mb)
             return
 
-        caption = media_caption(task.title, task.url, kind="video", size_mb=size_mb)
         metadata = await probe_video(source)
+        quality = []
+        if metadata.get("height") and metadata.get("width"):
+            quality.append(f"{min(metadata['height'], metadata['width'])}p")
+        caption = await self._caption(task, kind="video", size_mb=size_mb, extra=quality, note=note)
         if source.stat().st_size > self.settings.effective_send_as_doc_limit:
             await self.telegram.send_document(
                 task.chat_id,
@@ -147,6 +195,7 @@ class MediaPipeline:
                     caption=caption,
                     reply_to=task.reply_to_message_id,
                     metadata=metadata,
+                    effect=effect,
                 )
             except TelegramBadRequest as exc:
                 logger.info("Telegram rejected video payload; sending document: %s", exc)
@@ -163,7 +212,7 @@ class MediaPipeline:
         files = await self.downloader.download_subtitles(task, work_dir)
         await self._set_phase(task, TaskStatus.UPLOADING, "Отправка субтитров")
         total = 0
-        caption = media_caption(task.title, task.url, kind="subtitles")
+        caption = await self._caption(task, kind="subtitles")
         for index, path in enumerate(files):
             if task.cancel_event.is_set():
                 raise DownloadCancelled("Загрузка отменена пользователем")
@@ -185,7 +234,7 @@ class MediaPipeline:
         await self.telegram.send_document(
             task.chat_id,
             path,
-            caption=media_caption(task.title, task.url, kind="thumbnail", size_mb=size_mb),
+            caption=await self._caption(task, kind="thumbnail", size_mb=size_mb),
             reply_to=task.reply_to_message_id,
             filename=f"{sanitize_filename(task.title) or 'thumbnail'}{path.suffix}",
         )
@@ -210,7 +259,10 @@ class MediaPipeline:
             raise FileTooLarge("Одно из фото превышает лимит Telegram")
         await self._set_phase(task, TaskStatus.UPLOADING, "Отправка фото")
         caption = media_caption(
-            f"Фото из TikTok · {len(photos)} шт.", task.url, kind="tiktok_photo"
+            f"Фото из TikTok · {len(photos)} шт.",
+            task.url,
+            kind="tiktok_photo",
+            bot_username=await self.telegram.username(),
         )
         for offset in range(0, len(photos), 10):
             if task.cancel_event.is_set():

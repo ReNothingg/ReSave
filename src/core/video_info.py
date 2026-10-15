@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -104,6 +105,34 @@ def collect_resolutions(info: dict[str, Any]) -> list[int]:
     return sorted(heights, reverse=True)
 
 
+def _timestamp(info: dict[str, Any]) -> int | None:
+    for key in ("timestamp", "release_timestamp"):
+        value = _positive_int(info.get(key))
+        if value:
+            return value
+    raw = str(info.get("upload_date") or "")
+    if len(raw) == 8 and raw.isdigit():
+        return int(datetime.strptime(raw, "%Y%m%d").replace(tzinfo=UTC).timestamp())
+    return None
+
+
+def preview_url(info: dict[str, Any]) -> str | None:
+    candidates = [item for item in info.get("thumbnails") or [] if isinstance(item, dict)]
+    candidates.sort(
+        key=lambda item: (
+            str(item.get("url", "")).split("?")[0].lower().endswith((".jpg", ".jpeg", ".png")),
+            item.get("preference") or 0,
+            (item.get("width") or 0) * (item.get("height") or 0),
+        ),
+        reverse=True,
+    )
+    for item in [*candidates, {"url": info.get("thumbnail")}]:
+        url = item.get("url")
+        if isinstance(url, str) and url.startswith("https://") and len(url) < 1500:
+            return url
+    return None
+
+
 def compact_media_info(info: dict[str, Any]) -> dict[str, Any]:
     compact = {
         key: info.get(key)
@@ -111,6 +140,23 @@ def compact_media_info(info: dict[str, Any]) -> dict[str, Any]:
         if info.get(key) is not None
     }
     compact["thumbnail"] = bool(info.get("thumbnail"))
+    compact["thumbnail_url"] = preview_url(info)
+    for key in ("view_count", "like_count"):
+        if _positive_int(info.get(key)):
+            compact[key] = int(info[key])
+    compact["timestamp"] = _timestamp(info)
+    compact["source"] = str(info.get("extractor_key") or info.get("extractor") or "").split(":")[0]
+    compact["audio_size"] = max(
+        (
+            _positive_int(item.get("filesize") or item.get("filesize_approx")) or 0
+            for item in info.get("formats") or []
+            if isinstance(item, dict)
+            and item.get("vcodec") == "none"
+            and item.get("acodec", "none") != "none"
+            and str(item.get("ext")) in {"m4a", "mp4"}
+        ),
+        default=0,
+    )
     compact["subtitles"] = bool(info.get("subtitles"))
     compact["automatic_captions"] = bool(info.get("automatic_captions"))
     formats = [item for item in info.get("formats") or [] if isinstance(item, dict)]
@@ -148,6 +194,7 @@ def compact_media_info(info: dict[str, Any]) -> dict[str, Any]:
                 "height": height,
                 "vcodec": item.get("vcodec"),
                 "filesize": item.get("filesize") or item.get("filesize_approx"),
+                "tbr": item.get("tbr"),
             }
         )
     return compact

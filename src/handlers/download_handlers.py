@@ -87,7 +87,7 @@ class DownloadHandlers:
         assert message.from_user is not None
         status = await self.telegram.reply(
             message,
-            panel("Проверяю ссылку…"),
+            panel("Смотрю, что по ссылке…", ["Обычно это занимает пару секунд."], icon="search"),
             parse_mode="HTML",
         )
         try:
@@ -123,14 +123,18 @@ class DownloadHandlers:
                 await self.telegram.edit_status(
                     status.chat.id,
                     status.message_id,
-                    panel("В очереди", [f"Место в очереди: {position}."]),
+                    panel(
+                        "В очереди",
+                        [f"Место в очереди: {position}. Начну, как только освободится место."],
+                        icon="timer",
+                    ),
                     parse_mode="HTML",
                 )
             except (QueueCapacityError, UserTaskLimitError) as exc:
                 await self.telegram.edit_status(
                     status.chat.id,
                     status.message_id,
-                    panel("Очередь занята", [str(exc)]),
+                    panel("Очередь занята", [str(exc)], icon="hourglass"),
                     parse_mode="HTML",
                 )
             return
@@ -157,7 +161,10 @@ class DownloadHandlers:
                 lines.append(f"Лимит плейлиста: {self.settings.max_playlist_items}")
             title = "Добавлено из плейлиста" if count else "Плейлист не добавлен"
             await self.telegram.edit_status(
-                status.chat.id, status.message_id, panel(title, lines), parse_mode="HTML"
+                status.chat.id,
+                status.message_id,
+                panel(title, lines, icon="playlist"),
+                parse_mode="HTML",
             )
             return
 
@@ -184,6 +191,7 @@ class DownloadHandlers:
                 info,
                 resolutions,
                 ffmpeg_available=self.ffmpeg_available,
+                upload_limit=self.settings.effective_upload_limit,
             ),
         )
 
@@ -248,12 +256,26 @@ class DownloadHandlers:
         url = extract_url(text, message.entities, message.caption_entities)
         if not url:
             if message.chat.type == "private":
-                await self.telegram.reply(message, "Пришлите ссылку на видео или публикацию.")
+                await self.telegram.reply(
+                    message,
+                    panel(
+                        "Жду ссылку",
+                        [
+                            "Пришлите ссылку на видео, пост или трек — например, с YouTube или TikTok."
+                        ],
+                        icon="link",
+                    ),
+                )
             return
         if not self.selections.begin_request(message.from_user.id, message.chat.id):
             if message.chat.type == "private":
                 await self.telegram.reply(
-                    message, "Проверка ссылок занята. Попробуйте через минуту."
+                    message,
+                    panel(
+                        "Секунду",
+                        ["Ещё смотрю предыдущую ссылку. Пришлите эту, когда появится меню."],
+                        icon="hourglass",
+                    ),
                 )
             return
         try:
@@ -269,6 +291,7 @@ class DownloadHandlers:
                     panel(
                         "Ссылка отклонена",
                         ["Не могу открыть этот адрес. Пришлите ссылку на публикацию."],
+                        icon="blocked",
                     ),
                     parse_mode="HTML",
                 )
@@ -336,7 +359,11 @@ class DownloadHandlers:
         await self.telegram.edit_status(
             call.message.chat.id,
             call.message.message_id,
-            panel("В очереди", [f"Место в очереди: {position}."]),
+            panel(
+                "В очереди",
+                [f"Место в очереди: {position}. Начну, как только освободится место."],
+                icon="timer",
+            ),
             reply_markup=None,
         )
 

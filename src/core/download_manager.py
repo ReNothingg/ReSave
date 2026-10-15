@@ -5,6 +5,8 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
+from aiogram.types import EphemeralMessageParameters
+
 from ..utils.presentation import panel, user_error
 from .errors import DownloadCancelled
 from .models import ACTIVE_STATUSES, DownloadTask, TaskStatus
@@ -204,7 +206,9 @@ class DownloadManager:
             await self.telegram.edit_status(
                 task.chat_id,
                 task.status_message_id,
-                panel("Загрузка отменена"),
+                panel(
+                    "Загрузка отменена", ["Пришлите ссылку снова, если передумали."], icon="stop"
+                ),
             )
         except Exception as exc:
             logger.debug("Cannot edit cancelled task status: %s", exc)
@@ -219,7 +223,16 @@ class DownloadManager:
         except Exception as stats_exc:
             logger.error("Cannot record failed task: %s", stats_exc)
         try:
-            if task.silent:
+            if task.silent and task.chat_id < 0:
+                await self.telegram.send_message(
+                    task.chat_id,
+                    user_error(exc),
+                    reply_parameters=self.telegram._reply(task.reply_to_message_id),
+                    ephemeral_message_parameters=EphemeralMessageParameters(
+                        receiver_user_id=task.user_id
+                    ),
+                )
+            elif task.silent:
                 await self.telegram.send_message(
                     task.chat_id,
                     user_error(exc),

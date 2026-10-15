@@ -20,6 +20,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeChat
 
 import config
+from src.core.broadcast import BroadcastStore
 from src.core.download_manager import DownloadManager
 from src.core.media_downloader import MediaDownloader
 from src.core.media_pipeline import MediaPipeline
@@ -28,10 +29,11 @@ from src.core.telegram_gateway import TelegramGateway
 from src.core.updater import ToolUpdater
 from src.core.user_stats import UserStatsManager
 from src.core.video_info import VideoInfoService
-from src.handlers.admin_handlers import build_admin_router
+from src.handlers.admin_handlers import AdminHandlers
 from src.handlers.command_handlers import build_command_router
 from src.handlers.download_handlers import build_download_router
 from src.handlers.error_handlers import ErrorHandler
+from src.handlers.middlewares import UserRegistry
 from src.utils.file_utils import cleanup_old_files
 
 logger = logging.getLogger(__name__)
@@ -228,7 +230,14 @@ async def run(settings: config.Settings | None = None) -> None:
         )
         dispatcher = Dispatcher(storage=MemoryStorage())
         dispatcher.errors.register(ErrorHandler(telegram).__call__)
-        dispatcher.include_router(build_admin_router(settings, stats, telegram))
+        broadcasts = BroadcastStore(settings.stats_db_path)
+        cleanup.callback(broadcasts.close)
+        admin = AdminHandlers(settings, stats, telegram, broadcasts)
+        cleanup.push_async_callback(admin.shutdown)
+        registry = UserRegistry(stats)
+        dispatcher.message.outer_middleware(registry)
+        dispatcher.callback_query.outer_middleware(registry)
+        dispatcher.include_router(admin.router())
         dispatcher.include_router(
             build_command_router(manager, stats, telegram, settings, selections)
         )
@@ -258,6 +267,7 @@ async def run(settings: config.Settings | None = None) -> None:
         )
         cleanup.push_async_callback(cancel_task, asyncio.create_task(updater.run()))
         await setup_commands(bot, settings.admin_ids)
+        await admin.notify_interrupted()
         logger.info(
             "ReSave started: workers=%s local_bot_api=%s upload_limit=%s MB",
             settings.max_concurrent_downloads,

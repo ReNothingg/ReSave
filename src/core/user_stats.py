@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,20 @@ class UserStats:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> UserStats:
         return cls(**dict(row))
+
+
+@dataclass(frozen=True, slots=True)
+class AudienceSummary:
+    total: int = 0
+    reachable: int = 0
+    blocked: int = 0
+    active_day: int = 0
+    active_week: int = 0
+    new_week: int = 0
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class UserStatsManager:
@@ -68,6 +83,26 @@ class UserStatsManager:
                     last_download_date TEXT
                 )
                 """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    blocked_at TEXT
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO users (user_id, first_seen, last_seen)
+                SELECT user_id,
+                    COALESCE(first_download_date, ?),
+                    COALESCE(last_download_date, first_download_date, ?)
+                FROM user_stats WHERE user_id > 0
+                """,
+                (_now(), _now()),
             )
             self._connection.execute(
                 """
@@ -136,17 +171,60 @@ class UserStatsManager:
             )
 
     def ensure_user(self, user_id: int) -> None:
+        self.touch_user(user_id)
+
+    def touch_user(self, user_id: int) -> None:
         if user_id <= 0:
             return
+        now = _now()
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)",
-                (user_id,),
+                """
+                INSERT INTO users (user_id, first_seen, last_seen) VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET last_seen = excluded.last_seen, blocked_at = NULL
+                """,
+                (user_id, now, now),
             )
 
-    def record_download(self, user_id: int, action: str, file_size_mb: float = 0.0) -> None:
-        if user_id <= 0:
+    def mark_blocked(self, user_ids: list[int]) -> None:
+        if not user_ids:
             return
+        now = _now()
+        with self._lock, self._connection:
+            self._connection.executemany(
+                "UPDATE users SET blocked_at = ? WHERE user_id = ?",
+                [(now, user_id) for user_id in user_ids],
+            )
+
+    def audience(self) -> list[int]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT user_id FROM users WHERE blocked_at IS NULL ORDER BY last_seen DESC"
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def audience_summary(self) -> AudienceSummary:
+        week_ago = datetime.fromtimestamp(time.time() - 7 * 86400, UTC).isoformat()
+        day_ago = datetime.fromtimestamp(time.time() - 86400, UTC).isoformat()
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT COUNT(*),
+                    SUM(blocked_at IS NULL),
+                    SUM(blocked_at IS NOT NULL),
+                    SUM(last_seen >= ?),
+                    SUM(last_seen >= ?),
+                    SUM(first_seen >= ?)
+                FROM users
+                """,
+                (day_ago, week_ago, week_ago),
+            ).fetchone()
+        values = [int(value or 0) for value in row]
+        return AudienceSummary(*values)
+
+    def record_download(self, user_id: int, action: str, file_size_mb: float = 0.0) -> int:
+        if user_id <= 0:
+            return 0
         now = datetime.now(UTC).isoformat()
         video = 1 if action == "video" else 0
         audio = 1 if action == "audio" else 0
@@ -170,6 +248,10 @@ class UserStatsManager:
                 """,
                 (user_id, video, audio, other, max(0.0, file_size_mb), now, now),
             )
+            row = self._connection.execute(
+                "SELECT downloads_count FROM user_stats WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def record_failed_download(self, user_id: int) -> None:
         if user_id <= 0:
