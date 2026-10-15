@@ -12,7 +12,7 @@ from config import Settings
 from .errors import DownloadCancelled, FileTooLarge
 from .isolated import JobFailed, run_job
 from .media_tools import media_tool
-from .models import DownloadAction, DownloadTask, DownloadVariant
+from .models import DownloadAction, DownloadTask, DownloadVariant, TaskStatus
 from .processes import run_command
 from .tiktok_fallback import (
     TikTokFallbackError,
@@ -24,6 +24,16 @@ from .tiktok_fallback import (
 )
 
 logger = logging.getLogger(__name__)
+POSTPROCESSORS = {
+    "Merger": "Склеиваю видео и звук",
+    "VideoRemuxer": "Упаковываю в MP4",
+    "VideoConvertor": "Конвертирую видео",
+    "ExtractAudio": "Конвертирую в MP3",
+    "FixupM3u8": "Чиню поток",
+    "FixupM4a": "Чиню звук",
+    "FixupStretched": "Исправляю пропорции",
+    "MoveFiles": "-",
+}
 PERMANENT_ERRORS = (
     "private",
     "unsupported url",
@@ -83,19 +93,33 @@ class MediaDownloader:
 
     def _apply_event(self, task: DownloadTask, event: dict[str, Any]) -> None:
         if event.get("event") == "phase":
+            name = POSTPROCESSORS.get(str(event.get("name") or ""), "Обрабатываю файл")
+            if task.status != TaskStatus.PROCESSING:
+                task.phase_started_at = time.time()
+                task.status = TaskStatus.PROCESSING
+            if name != "-":
+                task.phase = name
             task.progress = max(task.progress, 0.99)
-            task.phase = "Обработка"
-            task.speed = None
+            task.speed = 0.0
             task.eta = None
             return
         if event.get("event") != "progress":
             return
         downloaded = int(event.get("downloaded") or 0)
         total = int(event.get("total") or 0)
+        task.downloaded_bytes = downloaded
+        task.total_bytes = total
         if total:
-            task.progress = min(0.99, max(0.0, downloaded / total))
-        task.speed = str(event.get("speed") or "").strip() or None
-        task.eta = event.get("eta")
+            task.progress = min(0.99, max(task.progress, downloaded / total))
+        speed = float(event.get("speed") or 0)
+        if speed:
+            task.speed = speed if not task.speed else task.speed * 0.6 + speed * 0.4
+        task.eta = round((total - downloaded) / task.speed) if total and task.speed else None
+        task.stream = event.get("stream")
+        task.stream_index = int(event.get("stream_index") or 1)
+        task.streams = int(event.get("streams") or 1)
+        fragments = (event.get("fragment"), event.get("fragments"))
+        task.fragments = (int(fragments[0]), int(fragments[1])) if all(fragments) else None
         task.phase = "Скачивание"
 
     async def download(self, task: DownloadTask, work_dir: Path) -> Path:
@@ -124,12 +148,24 @@ class MediaDownloader:
             raise DownloadCancelled("Загрузка отменена пользователем")
         self._clear(work_dir)
         task.phase = f"Скачивание: {variant.label}"
+        task.status = TaskStatus.DOWNLOADING
         task.progress = 0.0
+        task.downloaded_bytes = task.total_bytes = 0
+        task.speed = 0.0
+        task.eta = None
+        task.phase_started_at = time.time()
         logger.info(
             "Downloading task=%s action=%s variant=%s", task.task_id, task.action, variant.label
         )
         try:
-            return await self._download_variant(task, work_dir, variant)
+            try:
+                return await self._download_variant(task, work_dir, variant)
+            except JobFailed as exc:
+                if "403" not in str(exc):
+                    raise
+                logger.info("Retrying variant after 403 task=%s %s", task.task_id, variant.label)
+                self._clear(work_dir)
+                return await self._download_variant(task, work_dir, variant)
         except (DownloadCancelled, TimeoutError):
             raise
         except FileTooLarge as exc:

@@ -61,11 +61,7 @@ class MediaPipeline:
                 await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
     async def update_progress(self, task: DownloadTask) -> None:
-        if task.silent or task.status not in {
-            TaskStatus.DOWNLOADING,
-            TaskStatus.PROCESSING,
-            TaskStatus.UPLOADING,
-        }:
+        if task.silent:
             return
         await self.telegram.edit_status(
             task.chat_id,
@@ -117,6 +113,7 @@ class MediaPipeline:
             raise DownloadCancelled("Загрузка отменена пользователем")
         task.status = status
         task.phase = phase
+        task.phase_started_at = time.time()
         if not task.silent:
             await self.update_progress(task)
 

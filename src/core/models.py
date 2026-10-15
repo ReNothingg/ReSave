@@ -53,8 +53,16 @@ class DownloadTask:
     status: TaskStatus = TaskStatus.PENDING
     phase: str = "В очереди"
     progress: float = 0.0
-    speed: str | None = None
+    speed: float = 0.0
     eta: int | None = None
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    stream: str | None = None
+    stream_index: int = 1
+    streams: int = 1
+    fragments: tuple[int, int] | None = None
+    phase_started_at: float = field(default_factory=time.time)
+    queue_position: int | None = None
     error: str | None = None
     work_dir: str | None = None
     created_at: float = field(default_factory=time.time)

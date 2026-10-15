@@ -176,6 +176,17 @@ def format_count(value: object) -> str:
     return str(round(number))
 
 
+def smooth_bar(progress: float, width: int = 16) -> str:
+    value = min(1.0, max(0.0, progress)) if math.isfinite(progress) else 0.0
+    full, remainder = divmod(round(value * width * 8), 8)
+    partial = " ▏▎▍▌▋▊▉"[remainder].strip() if full < width else ""
+    return f"{'█' * full}{partial}{'░' * (width - full - len(partial))}"
+
+
+def format_speed(bytes_per_second: float) -> str:
+    return f"{format_size(bytes_per_second)}/с" if bytes_per_second else ""
+
+
 def progress_bar(progress: float, width: int = 12) -> str:
     value = min(1.0, max(0.0, progress)) if math.isfinite(progress) else 0.0
     filled = round(value * width)

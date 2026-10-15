@@ -29,3 +29,7 @@ test_config.py
 
 database.db-shm
 database.db-wal
+
+.packages/
+local.db*
+temp_local/

@@ -160,7 +160,7 @@ async def wait_for_api(bot: Bot, settings: config.Settings, attempts: int = 20) 
             await bot.get_me()
             return
         except TelegramUnauthorizedError as exc:
-            raise RuntimeError("Telegram отклонил BOT_TOKEN: проверьте токен в .env") from exc
+            raise RuntimeError("Telegram отклонил BOT_TOKEN: проверьте токен в .env или .env.local") from exc
         except TelegramNetworkError as exc:
             if attempt == attempts:
                 raise RuntimeError(

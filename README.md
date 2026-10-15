@@ -143,14 +143,28 @@ docker compose up -d --build
 Если API отклоняет эмодзи, бот сохраняет Rich Messages и цветные кнопки, заменяя иконки на обычные.
 Для API без Rich Messages предусмотрено HTML-оформление.
 
-Локальный запуск без Docker (нужны Python 3.11+, FFmpeg и ffprobe):
+Локальный запуск на тестовом боте (нужны Python 3.11+, FFmpeg и Deno):
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt ruff
+```
+
+Создайте `.env.local` — его значения важнее `.env`, а в git он не попадает:
+
+```env
+BOT_TOKEN=токен_тестового_бота
+BOT_API_BASE_URL=
+STATS_DB_PATH=local.db
+TEMP_DIR=temp_local
+```
+
+```bash
 .venv/bin/python main.py
 .venv/bin/ruff check .
 ```
+
+Без локального Bot API лимит файла — 50 МБ.
 
 | Путь | Ответственность |
 | :--- | :--- |

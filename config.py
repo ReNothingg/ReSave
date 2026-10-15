@@ -11,6 +11,7 @@ from src.version_guard import ensure_supported_python
 ensure_supported_python()
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env.local")
 load_dotenv(BASE_DIR / ".env")
 
 CLOUD_BOT_API_UPLOAD_LIMIT = 50 * 1024 * 1024
@@ -133,7 +134,7 @@ def build_settings() -> Settings:
         download_timeout_seconds=_integer("DOWNLOAD_TIMEOUT_SECONDS", 1800, minimum=30),
         download_stall_timeout_seconds=_integer("DOWNLOAD_STALL_TIMEOUT_SECONDS", 180, minimum=30),
         download_rate_limit_bytes=_integer("DOWNLOAD_RATE_LIMIT_BYTES", 0, minimum=0),
-        progress_update_seconds=_integer("PROGRESS_UPDATE_SECONDS", 3, minimum=1),
+        progress_update_seconds=_integer("PROGRESS_UPDATE_SECONDS", 2, minimum=1),
         packages_dir=_path("PACKAGES_DIR", ".packages"),
         tools_auto_update=_boolean("TOOLS_AUTO_UPDATE", True),
         tools_update_hours=_integer("TOOLS_UPDATE_HOURS", 6, minimum=1),

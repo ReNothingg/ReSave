@@ -257,10 +257,23 @@ class DownloadManager:
                 logger.warning("Progress loop iteration failed: %s", exc)
 
     async def _report_progress(self, last_progress: dict[str, tuple]) -> None:
+        pending = sorted(
+            (task for task in self._tasks.values() if task.status == TaskStatus.PENDING),
+            key=lambda task: task.created_at,
+        )
+        for position, task in enumerate(pending, 1):
+            task.queue_position = position
         for task in list(self._tasks.values()):
             if task.silent or task.status not in ACTIVE_STATUSES:
                 continue
-            current = (task.status, task.phase, round(task.progress, 2), task.speed, task.eta)
+            current = (
+                task.status,
+                task.phase,
+                round(task.progress, 3),
+                task.eta,
+                task.queue_position,
+                round(time.time() - task.phase_started_at) // 5,
+            )
             if current == last_progress.get(task.task_id):
                 continue
             try:

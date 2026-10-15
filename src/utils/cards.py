@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from html import escape
 
 from ..core.models import DownloadTask, TaskStatus
@@ -8,9 +9,12 @@ from .presentation import (
     MessageContent,
     clip,
     format_duration,
+    format_size,
+    format_speed,
     panel,
     parse_iso,
     progress_bar,
+    smooth_bar,
     tg_time,
 )
 from .theme import emoji, footer
@@ -224,26 +228,77 @@ def downloads_card(tasks: list[DownloadTask]) -> MessageContent:
     return card("Загрузки", body, fallback, icon="downloads")
 
 
+STREAM_NAMES = {"audio": "звук", "video": "видео", "media": "файл"}
+
+
+def _stream_label(task: DownloadTask) -> str:
+    raw = task.stream or "media"
+    kind, _, quality = raw.partition(" ")
+    name = STREAM_NAMES.get(kind, kind)
+    label = f"{name} {quality}".strip()
+    if task.streams > 1:
+        label += f" · {min(task.stream_index, task.streams)} из {task.streams}"
+    return label
+
+
+def _stages(task: DownloadTask, stage: int) -> list[tuple[str, bool]]:
+    if stage == 0 and task.streams > 1:
+        download = f"Скачиваю {_stream_label(task)}"
+    else:
+        download = "Скачиваю"
+    if stage == 1:
+        processing = task.phase
+    else:
+        processing = "Склеиваю и конвертирую" if task.streams > 1 else "Обрабатываю"
+    names = [download, processing, "Отправляю в Telegram"]
+    return [(name, index < stage) for index, name in enumerate(names)]
+
+
+def _download_section(task: DownloadTask) -> tuple[str, list[str]]:
+    if task.progress <= 0 and not task.downloaded_bytes:
+        return "<p><i>Подключаюсь к источнику…</i></p>", ["Подключаюсь к источнику…"]
+    percent = f"{min(task.progress, 0.99):.0%}"
+    body = f"<p><code>{smooth_bar(task.progress)}</code> <b>{percent}</b></p>"
+    rows = []
+    if task.total_bytes:
+        rows.append(
+            ("Скачано", f"{format_size(task.downloaded_bytes)} из {format_size(task.total_bytes)}")
+        )
+    elif task.downloaded_bytes:
+        rows.append(("Скачано", format_size(task.downloaded_bytes)))
+    if task.speed:
+        rows.append(("Скорость", format_speed(task.speed)))
+    if task.eta:
+        rows.append(("Осталось", f"≈ {format_duration(task.eta)}"))
+    if task.fragments and not task.total_bytes:
+        rows.append(("Фрагменты", f"{task.fragments[0]} из {task.fragments[1]}"))
+    body += metrics_table(rows)
+    return body, [f"{percent}"] + [f"{label}: {value}" for label, value in rows]
+
+
 def progress_card(task: DownloadTask) -> MessageContent:
+    if task.status == TaskStatus.PENDING:
+        place = f"{task.queue_position}-я" if task.queue_position else "скоро"
+        body = (
+            f"<blockquote>{emoji('timer')} Очередь: <b>{place}</b>. "
+            "Начну, как только освободится место.</blockquote>"
+        )
+        return card(clip(task.title, 120), body, [f"Очередь: {place}"], icon="timer")
     stage = (
         2
         if task.status == TaskStatus.UPLOADING
         else (1 if task.status == TaskStatus.PROCESSING or task.phase == "Обработка" else 0)
     )
-    names = ["Скачиваю", "Обрабатываю", "Отправляю"]
-    body = checklist([(name, index < stage) for index, name in enumerate(names)])
+    body = checklist(_stages(task, stage))
     fallback = [task.phase]
-    progress = task_progress(task) if stage == 0 else ""
-    if progress:
-        body += f"<p><code>{progress}</code></p>"
-        fallback.append(progress)
+    if stage == 0:
+        section, lines = _download_section(task)
+        body += section
+        fallback += lines
     else:
-        body += f"<p><i>{escape(clip(task.phase, 120))}…</i></p>"
-    metrics = []
-    if stage == 0 and task.speed:
-        metrics.append(("Скорость", clip(task.speed, 30)))
-    if stage == 0 and task.eta:
-        metrics.append(("Осталось", format_duration(task.eta)))
-    body += metrics_table(metrics)
-    fallback.extend(f"{label}: {value}" for label, value in metrics)
-    return card(clip(task.title, 120), body, fallback, icon="download")
+        elapsed = format_duration(time.time() - task.phase_started_at)
+        body += f"<p><code>{smooth_bar(1.0 if stage == 2 else 0.99)}</code></p>"
+        body += f"<p><i>{escape(clip(task.phase, 120))}…</i> · прошло {elapsed}</p>"
+        fallback.append(f"Прошло: {elapsed}")
+    icons = {0: "download", 1: "settings", 2: "upload"}
+    return card(clip(task.title, 120), body, fallback, icon=icons[stage])

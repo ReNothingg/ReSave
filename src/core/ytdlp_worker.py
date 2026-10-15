@@ -196,6 +196,14 @@ def select_result(work_dir: Path, audio: bool) -> Path:
     raise FileNotFoundError(f"yt-dlp не создал итоговый файл с потоком типа {required}")
 
 
+def stream_kind(info: dict[str, Any]) -> str:
+    has_video = info.get("vcodec") not in (None, "none")
+    has_audio = info.get("acodec") not in (None, "none")
+    if has_video:
+        return f"video {info['height']}p" if info.get("height") else "video"
+    return "audio" if has_audio else "media"
+
+
 class DownloadHooks:
     def __init__(self, size_limit: int, work_dir: Path, min_free: int):
         self.size_limit = size_limit
@@ -205,45 +213,85 @@ class DownloadHooks:
         self.safe_limit = max(1, round(size_limit * 0.97) - 1024 * 1024)
         self.rejected = False
         self.last_emit = 0.0
-        self.last_bytes = -1
+        self.expected: dict[str, int] = {}
+        self.streams: dict[str, tuple[int, int]] = {}
+        self.finished: set[str] = set()
 
     def size_filter(self, info: dict[str, Any], *, incomplete: bool) -> str | None:
         if incomplete:
             return None
+        self._remember_plan(info)
         size = estimated_size(info)
         if size and size > self.safe_limit:
             self.rejected = True
             return f"Estimated file size {size} exceeds limit {self.safe_limit}"
         return None
 
-    def progress(self, data: dict[str, Any]) -> None:
-        status = data.get("status")
-        if status == "finished":
-            emit("phase", stage="postprocess")
-        if status != "downloading":
+    def _remember_plan(self, info: dict[str, Any]) -> None:
+        if self.expected:
             return
-        downloaded = round(number(data.get("downloaded_bytes")))
-        now = time.monotonic()
-        if downloaded == self.last_bytes or now - self.last_emit < 0.5:
-            return
-        self.last_bytes, self.last_emit = downloaded, now
+        for item in info.get("requested_formats") or [info]:
+            if isinstance(item, dict):
+                key = str(item.get("format_id") or "media")
+                self.expected[key] = round(
+                    estimated_size(
+                        {**item, "duration": item.get("duration") or info.get("duration")}
+                    )
+                    or 0
+                )
+
+    def _guard(self, now: float, downloaded: int) -> None:
         if downloaded > self.size_limit * 2:
             raise TooLarge("Downloaded data exceeds the size limit")
         if now >= self.next_disk_check:
             self.next_disk_check = now + 2
             if shutil.disk_usage(self.work_dir).free < self.min_free:
                 raise OSError("No space left for media processing")
+
+    def _totals(self) -> tuple[int, int]:
+        done = sum(downloaded for downloaded, _ in self.streams.values())
+        total = sum(total for _, total in self.streams.values())
+        total += sum(size for key, size in self.expected.items() if key not in self.streams)
+        return done, max(total, done)
+
+    def progress(self, data: dict[str, Any]) -> None:
+        info = data.get("info_dict") or {}
+        self._remember_plan(info)
+        key = str(info.get("format_id") or "media")
+        status = data.get("status")
+        downloaded = round(number(data.get("downloaded_bytes")))
+        total = round(number(data.get("total_bytes") or data.get("total_bytes_estimate")))
+        if status == "finished":
+            final = round(number(data.get("total_bytes"))) or downloaded
+            self.streams[key] = (final, final)
+            self.finished.add(key)
+            return
+        if status != "downloading":
+            return
+        self.streams[key] = (downloaded, max(total, downloaded, self.expected.get(key, 0)))
+        now = time.monotonic()
+        if now - self.last_emit < 0.7:
+            return
+        self.last_emit = now
+        done, overall = self._totals()
+        self._guard(now, done)
+        fragments = (data.get("fragment_index"), data.get("fragment_count"))
         emit(
             "progress",
-            downloaded=downloaded,
-            total=round(number(data.get("total_bytes") or data.get("total_bytes_estimate"))),
-            speed=data.get("_speed_str"),
-            eta=round(number(data.get("eta"))) or None,
+            downloaded=done,
+            total=overall,
+            speed=number(data.get("speed")),
+            stream=stream_kind(info),
+            stream_index=len(self.finished) + 1,
+            streams=max(len(self.expected), 1),
+            fragment=fragments[0] if all(fragments) else None,
+            fragments=fragments[1] if all(fragments) else None,
         )
 
     @staticmethod
     def postprocess(data: dict[str, Any]) -> None:
-        emit("phase", stage="postprocess")
+        if data.get("status") == "started":
+            emit("phase", stage="postprocess", name=str(data.get("postprocessor") or ""))
 
 
 def op_download(job: dict[str, Any]) -> dict[str, Any]:
@@ -264,10 +312,8 @@ def op_download(job: dict[str, Any]) -> dict[str, Any]:
         }
     )
     postprocessors = list(job.get("postprocessors") or [])
-    if ffmpeg:
-        options["external_downloader"] = {"m3u8": "ffmpeg"}
-        if not audio:
-            postprocessors.append({"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"})
+    if ffmpeg and not audio:
+        postprocessors.append({"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"})
     if postprocessors:
         options["postprocessors"] = postprocessors
     with youtube_client(options) as ydl:
