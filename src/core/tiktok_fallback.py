@@ -22,7 +22,9 @@ class TikTokFallbackError(RuntimeError):
 
 def is_tiktok_url(url: str) -> bool:
     host = (urlsplit(url).hostname or "").lower()
-    return host == "tiktok.com" or host.endswith(".tiktok.com")
+    return (
+        host in {"tt.site", "www.tt.site"} or host == "tiktok.com" or host.endswith(".tiktok.com")
+    )
 
 
 def tiktok_video_id(url: str, error: str = "", known_id: object = None) -> str | None:

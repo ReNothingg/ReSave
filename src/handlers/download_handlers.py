@@ -19,7 +19,12 @@ from ..core.models import DownloadAction, DownloadTask
 from ..core.selection_store import SelectionStore
 from ..core.telegram_gateway import TelegramGateway
 from ..core.tiktok_photo_handler import is_tiktok_photo_url
-from ..core.url_tools import extract_url, is_public_url_target, normalize_url
+from ..core.url_tools import (
+    extract_url,
+    is_public_url_target,
+    normalize_url,
+    resolve_short_url,
+)
 from ..core.video_info import VideoInfoError, VideoInfoService, collect_resolutions
 from ..utils.presentation import panel, user_error
 from .media_menu import available_choices, media_keyboard, media_text
@@ -296,6 +301,7 @@ class DownloadHandlers:
                     parse_mode="HTML",
                 )
             return
+        url = await resolve_short_url(url)
         if message.chat.type in {"group", "supergroup"}:
             await self.process_group(message, url)
         else:

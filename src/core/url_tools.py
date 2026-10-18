@@ -4,9 +4,16 @@ import asyncio
 import ipaddress
 import re
 import socket
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
+
+import aiohttp
 
 HTTP_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
+TIKTOK_SHORT_HOSTS = {"tt.site", "www.tt.site", "vm.tiktok.com", "vt.tiktok.com"}
+SHORT_LINK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 BARE_URL_RE = re.compile(
     r"(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
     r"(?:/[^\s<>\"'`]*)?",
@@ -135,3 +142,46 @@ async def is_public_url_target(url: str) -> bool:
         return bool(resolved) and all(ipaddress.ip_address(item).is_global for item in resolved)
     except ValueError:
         return False
+
+
+def is_tiktok_short_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    if host in TIKTOK_SHORT_HOSTS:
+        return True
+    return host in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"} and parsed.path.startswith(
+        "/t/"
+    )
+
+
+def _is_tiktok_host(host: str) -> bool:
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
+
+
+async def resolve_short_url(url: str, *, max_hops: int = 5) -> str:
+    if not is_tiktok_short_url(url):
+        return url
+    current = url
+    timeout = aiohttp.ClientTimeout(total=10)
+    headers = {"User-Agent": SHORT_LINK_USER_AGENT}
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for _ in range(max_hops):
+                if not await is_public_url_target(current):
+                    return url
+                async with session.get(current, allow_redirects=False) as response:
+                    location = response.headers.get("Location")
+                    if response.status not in {301, 302, 303, 307, 308} or not location:
+                        break
+                target = normalize_url(urljoin(current, location))
+                if target is None:
+                    return url
+                current = target
+                if not is_tiktok_short_url(current):
+                    break
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        return url
+    if current == url or not _is_tiktok_host((urlsplit(current).hostname or "").lower()):
+        return url
+    parsed = urlsplit(current)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
